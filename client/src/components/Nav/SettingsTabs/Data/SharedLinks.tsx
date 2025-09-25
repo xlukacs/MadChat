@@ -61,7 +61,7 @@ export default function SharedLinks() {
   const [sorting, setSorting] = useState<SortingState>(defaultSort);
   const [searchValue, setSearchValue] = useState('');
 
-  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isFetching, refetch, isLoading } =
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, isLoading } =
     useSharedLinksQuery(queryParams, {
       enabled: isOpen,
       keepPreviousData: true,
@@ -253,7 +253,7 @@ export default function SharedLinks() {
         },
         meta: {
           className: 'w-32 sm:w-40',
-          desktopOnly: true,
+          // desktopOnly: true, // WIP
         },
         enableSorting: true,
       },
@@ -267,7 +267,7 @@ export default function SharedLinks() {
         ),
         cell: ({ row }) => {
           const link = row.original as SharedLinkItem;
-          const { title, conversationId, shareId } = link;
+          const { title, conversationId } = link;
 
           return (
             <div className="flex items-center gap-2">
