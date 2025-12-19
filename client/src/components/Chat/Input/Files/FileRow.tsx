@@ -1,13 +1,47 @@
 import { useEffect } from 'react';
+import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { EToolResources } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
-import { useDeleteFilesMutation } from '~/data-provider';
+import { useFileDownload, useDeleteFilesMutation } from '~/data-provider';
 import { useFileDeletion } from '~/hooks/Files';
 import FileContainer from './FileContainer';
 import { useLocalize } from '~/hooks';
 import { logger } from '~/utils';
 import Image from './Image';
+import store from '~/store';
+
+function DownloadableFileChip({
+  file,
+  onDelete,
+}: {
+  file: ExtendedFile;
+  onDelete: () => void;
+}) {
+  const user = useRecoilValue(store.user);
+  const { refetch: downloadFile } = useFileDownload(user?.id ?? '', file.file_id);
+
+  const handleDownload = async () => {
+    try {
+      const stream = await downloadFile();
+      const url = stream.data;
+      if (url == null || url === '') {
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', file.filename ?? 'file');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Error downloading file', e);
+    }
+  };
+
+  return <FileContainer file={file} onDelete={onDelete} onClick={handleDownload} />;
+}
 
 export default function FileRow({
   files: _files,
@@ -121,6 +155,11 @@ export default function FileRow({
               deleteFile({ file, setFiles });
             };
             const isImage = file.type?.startsWith('image') ?? false;
+            const allowDownloadClick =
+              tool_resource === EToolResources.file_search &&
+              file.progress === 1 &&
+              !!file.file_id &&
+              !!file.filename;
 
             return (
               <div
@@ -139,7 +178,13 @@ export default function FileRow({
                     source={file.source}
                   />
                 ) : (
-                  <FileContainer file={file} onDelete={handleDelete} />
+                  <>
+                    {allowDownloadClick ? (
+                      <DownloadableFileChip file={file} onDelete={handleDelete} />
+                    ) : (
+                      <FileContainer file={file} onDelete={handleDelete} />
+                    )}
+                  </>
                 )}
               </div>
             );

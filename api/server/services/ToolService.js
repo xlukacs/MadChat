@@ -36,6 +36,117 @@ const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
 const { redactMessage } = require('~/config/parsers');
 const { findPluginAuthsByKeys } = require('~/models');
+const path = require('path');
+ 
+const SAVE_EDITED_FILE_TOOL = 'save_edited_file';
+const RETRIEVE_FILE_TO_ARTIFACT_TOOL = 'retrieve_file_to_artifact';
+const LIST_ACCESSIBLE_FILES_TOOL = 'list_accessible_files';
+const TEXT_EXT_ALLOWLIST = new Set(['.txt', '.md', '.json', '.js', '.ts', '.csv']);
+const shouldEnableSaveEditedFile = (req) => {
+  const files = req?.body?.files ?? [];
+  if (!Array.isArray(files) || files.length === 0) {
+    return false;
+  }
+  return files.some((f) => {
+    const filename = (f && f.filename) || '';
+    const type = (f && f.type) || '';
+    if (typeof type === 'string' && type.startsWith('image/')) {
+      return false;
+    }
+    const ext = path.extname(filename).toLowerCase();
+    return TEXT_EXT_ALLOWLIST.has(ext);
+  });
+};
+const shouldEnableRetrieveFileToArtifact = shouldEnableSaveEditedFile;
+const shouldEnableListAccessibleFiles = (req) => {
+  // Keep this conservative to avoid bloating prompts/toolsets unless it’s likely needed.
+  const extractText = (content) => {
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      // OpenAI/OpenRouter style: [{type:'text', text:{value}}] or [{type:'text', text:'...'}]
+      return content
+        .map((part) => {
+          if (!part) return '';
+          if (typeof part === 'string') return part;
+          if (typeof part.text === 'string') return part.text;
+          if (typeof part.text?.value === 'string') return part.text.value;
+          if (typeof part.content === 'string') return part.content;
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    if (content && typeof content === 'object') {
+      if (typeof content.text === 'string') return content.text;
+      if (typeof content.text?.value === 'string') return content.text.value;
+    }
+    return '';
+  };
+
+  const lastFromMessages = Array.isArray(req?.body?.messages)
+    ? extractText(req.body.messages.at(-1)?.content)
+    : '';
+
+  const lastUserText = extractText(
+    req?.body?.message ?? req?.body?.text ?? req?.body?.prompt ?? req?.body?.input ?? lastFromMessages,
+  );
+
+  if (typeof lastUserText !== 'string' || lastUserText.trim().length === 0) {
+    return false;
+  }
+  const s = lastUserText.toLowerCase();
+  return (
+    (s.includes('list') || s.includes('show') || s.includes('display') || s.includes('table')) &&
+    (s.includes('file') || s.includes('files'))
+  );
+};
+ 
+const getSaveEditedFileInstructions = () => {
+  return [
+    '## Edited file outputs',
+    'When the user asks you to modify an attached text file (txt/md/json/js/ts/csv):',
+    `1) Call \`${SAVE_EDITED_FILE_TOOL}\` with \`source_file_id\` and the FULL updated \`content\`.`,
+    '2) Then respond with EXACTLY ONE enclosed artifact block containing the edited content:',
+    '```',
+    ':::artifact{type="text/markdown" title="FILENAME_HERE" identifier="FILE_ID_HERE"}',
+    '...paste the full edited content here...',
+    ':::',
+    '```',
+    'Do not include additional artifact blocks. The artifact body must be the complete updated file content.',
+  ].join('\n');
+};
+ 
+const getRetrieveFileToArtifactInstructions = () => {
+  return [
+    '## File retrieval to artifact',
+    `If you need to re-open/reuse a previously uploaded file by its file_id, call \`${RETRIEVE_FILE_TO_ARTIFACT_TOOL}\` with \`source_file_id\`.`,
+    'After calling it, you MUST respond with EXACTLY ONE enclosed artifact block (Markdown) using the returned file_id as the artifact identifier:',
+    '```',
+    ':::artifact{type="text/markdown" title="FILENAME_HERE" identifier="FILE_ID_HERE"}',
+    '...paste the full file content here...',
+    ':::',
+    '```',
+  ].join('\n');
+};
+
+const getListAccessibleFilesInstructions = () => {
+  return [
+    '## Listing accessible files',
+    `When the user asks to list/show/display their files (or files they can access), call \`${LIST_ACCESSIBLE_FILES_TOOL}\`.`,
+    'After calling it, respond with EXACTLY ONE enclosed artifact block containing a Markdown table of files (include file_id in the table).',
+    'Do NOT use filesystem tools (e.g. list_directory) to inspect server paths like /app/uploads and do NOT provide path-based download links.',
+    'Never output links like /api/download?path=... . Always work with file_id-based access.',
+    '```',
+    ':::artifact{type="text/markdown" title="Accessible files" identifier="accessible_files"}',
+    '| Filename | file_id | Size | Type | Source | Context | Access |',
+    '|---|---|---:|---|---|---|---|',
+    '| ... | `file_id_here` | ... | ... | ... | ... | ... |',
+    ':::',
+    '```',
+  ].join('\n');
+};
 /**
  * Processes the required actions by calling the appropriate tools and returning the outputs.
  * @param {OpenAIClient} client - OpenAI or StreamRunManager Client.
@@ -108,6 +219,7 @@ async function processRequiredActions(client, requiredActions) {
     options: {
       processFileURL,
       req: client.req,
+      res: client.res,
       uploadImageBuffer,
       openAIApiKey: client.apiKey,
       returnMetadata: true,
@@ -138,8 +250,35 @@ async function processRequiredActions(client, requiredActions) {
     }
     let tool = ToolMap[currentAction.tool] ?? ActionToolMap[currentAction.tool];
 
-    const handleToolOutput = async (output) => {
+    const handleToolOutput = async (toolResult) => {
+      let output = toolResult;
+      let artifact = null;
+      if (toolResult && typeof toolResult === 'object') {
+        output = toolResult.output ?? toolResult.content ?? '';
+        artifact = toolResult.artifact ?? null;
+      }
+      if (typeof output !== 'string') {
+        output = JSON.stringify(output);
+      }
       requiredActions[i].output = output;
+ 
+      // Stream any saved file attachments produced by the tool
+      if (artifact && Array.isArray(artifact.saved_files) && artifact.saved_files.length > 0) {
+        for (const saved of artifact.saved_files) {
+          try {
+            client.res?.write?.(
+              `event: attachment\ndata: ${JSON.stringify({
+                ...saved,
+                messageId: currentAction.run_id,
+                conversationId: currentAction.thread_id,
+                toolCallId: currentAction.toolCallId,
+              })}\n\n`,
+            );
+          } catch (e) {
+            logger.warn('[ToolService] Failed streaming saved_files attachment:', e);
+          }
+        }
+      }
 
       /** @type {FunctionToolCall & PartMetadata} */
       const toolCall = {
@@ -415,6 +554,48 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     }
     return true;
   });
+ 
+  // Auto-enable save_edited_file when user has attached a text-like file in this request.
+  // This keeps the UX simple: upload -> ask for edits -> model can return an updated downloadable file.
+  if (_agentTools && shouldEnableSaveEditedFile(req) && !_agentTools.includes(SAVE_EDITED_FILE_TOOL)) {
+    _agentTools.push(SAVE_EDITED_FILE_TOOL);
+  }
+  if (
+    _agentTools &&
+    shouldEnableRetrieveFileToArtifact(req) &&
+    !_agentTools.includes(RETRIEVE_FILE_TO_ARTIFACT_TOOL)
+  ) {
+    _agentTools.push(RETRIEVE_FILE_TO_ARTIFACT_TOOL);
+  }
+
+  // Make file listing available when tools are enabled (agent-safe: results are access-checked server-side).
+  if (_agentTools && areToolsEnabled && !_agentTools.includes(LIST_ACCESSIBLE_FILES_TOOL)) {
+    _agentTools.push(LIST_ACCESSIBLE_FILES_TOOL);
+  }
+ 
+  // If we enabled save_edited_file, inject explicit instructions into the agent system prompt.
+  if (shouldEnableSaveEditedFile(req)) {
+    const current = req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
+    const injected = `${current}\n\n${getSaveEditedFileInstructions()}\n\n${getRetrieveFileToArtifactInstructions()}`.trim();
+    if (req?.body?.ephemeralAgent) {
+      req.body.ephemeralAgent.additional_instructions = injected;
+    }
+    if (agent) {
+      agent.additional_instructions = injected;
+    }
+  }
+
+  // Only inject listing instructions when the user likely asked for it, to avoid prompt bloat.
+  if (shouldEnableListAccessibleFiles(req)) {
+    const current = req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
+    const injected = `${current}\n\n${getListAccessibleFilesInstructions()}`.trim();
+    if (req?.body?.ephemeralAgent) {
+      req.body.ephemeralAgent.additional_instructions = injected;
+    }
+    if (agent) {
+      agent.additional_instructions = injected;
+    }
+  }
 
   if (!_agentTools || _agentTools.length === 0) {
     return {};

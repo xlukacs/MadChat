@@ -1,8 +1,21 @@
 const cookies = require('cookie');
 const jwt = require('jsonwebtoken');
-const openIdClient = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
 const { isEnabled, findOpenIDUser } = require('@librechat/api');
+
+/** @type {typeof import('openid-client')} */
+let openIdClient;
+
+/**
+ * Get the openid-client module (dynamic import for ESM compatibility)
+ * @returns {Promise<typeof import('openid-client')>}
+ */
+async function getOpenIdClient() {
+  if (!openIdClient) {
+    openIdClient = await import('openid-client');
+  }
+  return openIdClient;
+}
 const {
   requestPasswordReset,
   setOpenIDAuthTokens,
@@ -76,7 +89,8 @@ const refreshController = async (req, res) => {
   if (token_provider === 'openid' && isEnabled(process.env.OPENID_REUSE_TOKENS) === true) {
     try {
       const openIdConfig = getOpenIdConfig();
-      const tokenset = await openIdClient.refreshTokenGrant(openIdConfig, refreshToken);
+      const client = await getOpenIdClient();
+      const tokenset = await client.refreshTokenGrant(openIdConfig, refreshToken);
       const claims = tokenset.claims();
       const { user, error, migration } = await findOpenIDUser({
         findUser,

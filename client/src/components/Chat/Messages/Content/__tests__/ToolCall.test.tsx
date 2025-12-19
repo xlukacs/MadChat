@@ -378,5 +378,20 @@ describe('ToolCall', () => {
       const attachmentGroup = screen.getByTestId('attachment-group');
       expect(JSON.parse(attachmentGroup.textContent!)).toEqual(complexAttachments);
     });
+
+    it('shows image placeholder when image-like tool is in progress', () => {
+      renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          name="image-gen"
+          initialProgress={0.2}
+          isSubmitting={true}
+          output={null}
+          attachments={[]}
+        />,
+      );
+
+      expect(screen.getByText('Generating image...')).toBeInTheDocument();
+    });
   });
 });

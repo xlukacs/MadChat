@@ -228,6 +228,29 @@ const AgentController = async (req, res, next, initializeClient, addTitle) => {
     conversation.title =
       conversation && !conversation.title ? null : conversation?.title || 'New Chat';
 
+    // Await artifact promises and merge attachments into response
+    if (client.artifactPromises && client.artifactPromises.length > 0) {
+      try {
+        const resolvedArtifacts = await Promise.all(client.artifactPromises);
+        const validAttachments = resolvedArtifacts.filter((a) => a != null);
+        if (validAttachments.length > 0) {
+          const attachmentsSummary = validAttachments.map((a) => ({
+            file_id: a.file_id,
+            filepath: a.filepath,
+            width: a.width,
+            height: a.height,
+          }));
+          logger.info(
+            `[AgentController] Resolved ${validAttachments.length} artifact attachments: ${JSON.stringify(attachmentsSummary)}`,
+          );
+          response.attachments = response.attachments || [];
+          response.attachments.push(...validAttachments);
+        }
+      } catch (err) {
+        logger.error('[AgentController] Error resolving artifact promises:', err);
+      }
+    }
+
     // Process files if needed (sanitize to remove large text fields before transmission)
     if (req.body.files && client.options?.attachments) {
       userMessage.files = [];

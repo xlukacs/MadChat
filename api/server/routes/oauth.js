@@ -1,8 +1,16 @@
 // file deepcode ignore NoRateLimitingForLogin: Rate limiting is handled by the `loginLimiter` middleware
 const express = require('express');
+const crypto = require('crypto');
 const passport = require('passport');
-const { randomState } = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
+
+/**
+ * Generate a random state string for OAuth (replaces openid-client randomState)
+ * @returns {string} A random hex string for state parameter
+ */
+function randomState() {
+  return crypto.randomBytes(32).toString('hex');
+}
 const { ErrorTypes } = require('librechat-data-provider');
 const { isEnabled, createSetBalanceConfig } = require('@librechat/api');
 const { checkDomainAllowed, loginLimiter, logHeaders, checkBan } = require('~/server/middleware');

@@ -32,6 +32,106 @@ const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
 
+const IMAGE_URL_PATTERN = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)/gi;
+const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/gi;
+
+/**
+ * Check if a string is an image URL (http/https or data URI)
+ */
+const isImageUrlString = (value) =>
+  typeof value === 'string' &&
+  (value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('data:image/'));
+
+/**
+ * Extract image URLs from any value (string, array, object) recursively
+ */
+const extractImageUrls = (value, acc = []) => {
+  if (!value) {
+    return acc;
+  }
+  if (typeof value === 'string') {
+    // Check for direct image URL
+    if (isImageUrlString(value)) {
+      acc.push(value);
+      return acc;
+    }
+    // Also try to extract URLs from within strings (e.g. JSON or text containing URLs)
+    const replicateMatches = value.match(REPLICATE_DELIVERY_PATTERN) || [];
+    const imageExtMatches = value.match(IMAGE_URL_PATTERN) || [];
+    const allMatches = [...new Set([...replicateMatches, ...imageExtMatches])];
+    allMatches.forEach((url) => {
+      if (!acc.includes(url)) {
+        acc.push(url);
+      }
+    });
+    return acc;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((v) => extractImageUrls(v, acc));
+    return acc;
+  }
+  if (typeof value === 'object') {
+    for (const v of Object.values(value)) {
+      if (v && typeof v === 'object' && 'url' in v && isImageUrlString(v.url)) {
+        if (!acc.includes(v.url)) {
+          acc.push(v.url);
+        }
+        continue;
+      }
+      extractImageUrls(v, acc);
+    }
+  }
+  return acc;
+};
+
+/**
+ * Normalize MCP tool result to include image artifacts if URLs are detected.
+ * Returns [textContent, artifact] format for CONTENT_AND_ARTIFACT response.
+ */
+const normalizeMCPImageResult = (result) => {
+  // Stringify for logging to see actual values
+  let resultPreview;
+  try {
+    resultPreview = JSON.stringify(result);
+    if (resultPreview && resultPreview.length > 500) {
+      resultPreview = resultPreview.slice(0, 500) + '...';
+    }
+  } catch (e) {
+    resultPreview = String(result);
+  }
+
+  logger.info(`[MCP][normalizeMCPImageResult] input type=${typeof result} isArray=${Array.isArray(result)} preview=${resultPreview}`);
+
+  const urls = extractImageUrls(result, []);
+  logger.info(`[MCP][normalizeMCPImageResult] extracted ${urls.length} URLs: ${JSON.stringify(urls)}`);
+
+  if (!urls.length) {
+    logger.info('[MCP][normalizeMCPImageResult] no URLs found, returning original result');
+    return result;
+  }
+
+  // Build artifact content array with image_url entries
+  const artifactContent = urls.map((url) => ({
+    type: ContentTypes.IMAGE_URL,
+    image_url: { url },
+  }));
+
+  // Text response for the model
+  const textResponse = [
+    {
+      type: ContentTypes.TEXT,
+      text: 'Generated image(s) displayed below.',
+    },
+  ];
+
+  logger.info(`[MCP][normalizeMCPImageResult] returning normalized result with ${urls.length} images`);
+
+  // Return [content, artifact] format for CONTENT_AND_ARTIFACT
+  return [textResponse, { content: artifactContent }];
+};
+
 /**
  * @param {object} params
  * @param {ServerResponse} params.res - The Express response object for sending events.
@@ -427,13 +527,31 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         oauthEnd,
       });
 
-      if (isAssistantsEndpoint(provider) && Array.isArray(result)) {
-        return result[0];
+      // Log raw MCP result before normalization
+      let rawResultPreview;
+      try {
+        rawResultPreview = JSON.stringify(result);
+        if (rawResultPreview && rawResultPreview.length > 800) {
+          rawResultPreview = rawResultPreview.slice(0, 800) + '...';
+        }
+      } catch (e) {
+        rawResultPreview = String(result);
       }
-      if (isGoogle && Array.isArray(result[0]) && result[0][0]?.type === ContentTypes.TEXT) {
-        return [result[0][0].text, result[1]];
+      logger.info(`[MCP][${serverName}][${toolName}] raw callTool result: ${rawResultPreview}`);
+
+      const normalized = normalizeMCPImageResult(result);
+
+      if (isAssistantsEndpoint(provider) && Array.isArray(normalized)) {
+        return normalized[0];
       }
-      return result;
+      if (
+        isGoogle &&
+        Array.isArray(normalized[0]) &&
+        normalized[0][0]?.type === ContentTypes.TEXT
+      ) {
+        return [normalized[0][0].text, normalized[1]];
+      }
+      return normalized;
     } catch (error) {
       logger.error(
         `[MCP][${serverName}][${toolName}][User: ${userId}] Error calling MCP tool:`,
@@ -623,4 +741,5 @@ module.exports = {
   getMCPSetupData,
   checkOAuthFlowStatus,
   getServerConnectionStatus,
+  normalizeMCPImageResult,
 };
