@@ -1,10 +1,11 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Button } from '@librechat/client';
-import { TriangleAlert } from 'lucide-react';
+import { Button, Skeleton } from '@librechat/client';
+import { Loader2, TriangleAlert } from 'lucide-react';
 import {
   Constants,
   dataService,
+  imageExtRegex,
   actionDelimiter,
   actionDomainSeparator,
 } from 'librechat-data-provider';
@@ -156,6 +157,29 @@ export default function ToolCall({
     [args, output],
   );
 
+  const hasImageAttachment = useMemo(() => {
+    if (!attachments || attachments.length === 0) {
+      return false;
+    }
+    return attachments.some((attachment) => {
+      const filename = attachment.filename ?? '';
+      const { width, height, filepath = null } = attachment as { width?: number; height?: number; filepath?: string | null };
+      return (
+        Boolean(filepath) &&
+        width != null &&
+        height != null &&
+        imageExtRegex.test(filename.toLowerCase())
+      );
+    });
+  }, [attachments]);
+
+  const isImageLikeTool = useMemo(() => {
+    const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
+    const argsString = typeof _args === 'string' ? _args.toLowerCase() : '';
+    const keywords = ['image', 'img', 'flux', 'dalle', 'sd', 'sdxl', 'photo', 'picture', 'imagen'];
+    return keywords.some((kw) => lowerName.includes(kw) || argsString.includes(kw));
+  }, [name, _args]);
+
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
   }, [parsedAuthUrl]);
@@ -172,6 +196,8 @@ export default function ToolCall({
     }
     return undefined;
   }, [isMCPToolCall, mcpServerName, domain, localize]);
+
+  const showImagePlaceholder = isSubmitting && progress < 1 && isImageLikeTool && !hasImageAttachment;
 
   const getFinishedText = () => {
     if (cancelled) {
@@ -254,6 +280,17 @@ export default function ToolCall({
             <TriangleAlert className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
             {localize('com_assistants_allow_sites_you_trust')}
           </p>
+        </div>
+      )}
+      {!hideAttachments && showImagePlaceholder && (
+        <div className="my-3 flex max-w-lg items-center gap-3 rounded-xl border border-border-light bg-surface-secondary p-3 shadow-sm">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-primary">
+            <Loader2 className="h-5 w-5 animate-spin text-text-secondary" aria-hidden="true" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-medium text-text-primary">Generating image...</p>
+            <Skeleton className="mt-2 h-24 w-full rounded-lg" />
+          </div>
         </div>
       )}
       {!hideAttachments && attachments && attachments.length > 0 && (

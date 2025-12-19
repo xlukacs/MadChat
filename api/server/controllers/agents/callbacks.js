@@ -1,4 +1,5 @@
 const { nanoid } = require('nanoid');
+const path = require('path');
 const { logger } = require('@librechat/data-schemas');
 const { Tools, StepTypes, FileContext, ErrorTypes } = require('librechat-data-provider');
 const {
@@ -16,7 +17,40 @@ const {
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
-const { saveBase64Image } = require('~/server/services/Files/process');
+const { saveBase64Image, processFileURL } = require('~/server/services/Files/process');
+const { getFileStrategy } = require('~/server/utils/getFileStrategy');
+const extractUrls = (value, acc = []) => {
+  if (!value) {
+    return acc;
+  }
+  if (typeof value === 'string') {
+    const matches = [];
+    const standard = value.match(/https?:\/\/\S+/g);
+    if (standard) {
+      matches.push(...standard);
+    }
+    const replicate = value.match(/replicate\.delivery\/[^\s"']+/g);
+    if (replicate) {
+      // normalize replicate matches to full URL if missing scheme
+      replicate.forEach((m) => {
+        const hasProtocol = m.startsWith('http://') || m.startsWith('https://');
+        matches.push(hasProtocol ? m : `https://${m}`);
+      });
+    }
+    if (matches) {
+      acc.push(...matches);
+    }
+    return acc;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((v) => extractUrls(v, acc));
+    return acc;
+  }
+  if (typeof value === 'object') {
+    Object.values(value).forEach((v) => extractUrls(v, acc));
+  }
+  return acc;
+};
 
 class ModelEndHandler {
   /**
@@ -498,12 +532,61 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
    */
   return async (data, metadata) => {
     const output = data?.output;
+
+    // Debug logging for tool end callback
+    let artifactPreview;
+    try {
+      artifactPreview = output?.artifact ? JSON.stringify(output.artifact).slice(0, 300) : 'none';
+    } catch (_e) {
+      artifactPreview = 'error serializing';
+    }
+    const toolCallId = output?.tool_call_id ?? data?.tool_call_id;
+    logger.info(
+      `[ToolEndCallback] called - hasOutput=${!!output} outputName=${output?.name} hasArtifact=${!!output?.artifact} toolCallId=${toolCallId}`,
+    );
+    logger.info(`[ToolEndCallback] artifact preview: ${artifactPreview}`);
+
     if (!output) {
+      logger.info('[ToolEndCallback] no output, returning early');
       return;
     }
 
     if (!output.artifact) {
+      logger.info('[ToolEndCallback] no artifact, returning early');
       return;
+    }
+
+    const contentPreview = output.artifact.content
+      ? JSON.stringify(output.artifact.content).slice(0, 300)
+      : 'none';
+    logger.info(
+      `[ToolEndCallback] processing artifact - hasContent=${!!output.artifact.content} contentLength=${output.artifact.content?.length} content=${contentPreview}`,
+    );
+
+    // Edited file outputs (save_edited_file): stream and collect as attachments
+    if (Array.isArray(output.artifact.saved_files) && output.artifact.saved_files.length > 0) {
+      const toolCallIdFallback = output.tool_call_id ?? data?.tool_call_id ?? data?.id ?? null;
+      for (const saved of output.artifact.saved_files) {
+        artifactPromises.push(
+          (async () => {
+            const attachment = {
+              ...saved,
+              // Match other attachment events: attach to the current run/thread metadata
+              messageId: metadata?.run_id,
+              conversationId: metadata?.thread_id,
+              toolCallId: toolCallIdFallback,
+            };
+            if (!res.headersSent) {
+              return attachment;
+            }
+            res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+            return attachment;
+          })().catch((error) => {
+            logger.error('Error processing saved_files artifact:', error);
+            return null;
+          }),
+        );
+      }
     }
 
     if (output.artifact[Tools.file_search]) {
@@ -587,29 +670,105 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
         if (part.type !== 'image_url') {
           continue;
         }
-        const { url } = part.image_url;
+        const { url } = part.image_url || {};
+        if (!url) {
+          continue;
+        }
+        const isHttpUrl = /^https?:\/\//i.test(url);
         artifactPromises.push(
           (async () => {
-            const filename = `${output.name}_img_${nanoid()}`;
+            const baseFileName = `${output.name}_${output.tool_call_id}_img_${nanoid()}`;
+            const fallbackExt = '.png';
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
-              req,
-              file_id,
-              filename,
-              endpoint: metadata.provider,
-              context: FileContext.image_generation,
-            });
-            const fileMetadata = Object.assign(file, {
-              messageId: metadata.run_id,
-              toolCallId: output.tool_call_id,
-              conversationId: metadata.thread_id,
-            });
-            if (!streamId && !res.headersSent) {
-              return fileMetadata;
+            let fileMetadata = null;
+
+            try {
+              if (isHttpUrl) {
+                const parsedUrl = new URL(url);
+                const ext = path.extname(parsedUrl.pathname) || fallbackExt;
+                const fileName = `${baseFileName}${ext}`;
+                const fileStrategy = getFileStrategy(req.config, { isImage: true });
+                const file = await processFileURL({
+                  URL: url,
+                  userId: req.user.id,
+                  fileName,
+                  basePath: 'images',
+                  context: FileContext.image_generation,
+                  fileStrategy,
+                });
+                logger.info(
+                  `[ToolEnd][image_url:http] stored: ${JSON.stringify({
+                    url,
+                    file_id: file?.file_id,
+                    filepath: file?.filepath,
+                    width: file?.width,
+                    height: file?.height,
+                    bytes: file?.bytes,
+                    type: file?.type,
+                  })}`,
+                );
+                fileMetadata = file
+                  ? Object.assign(file, {
+                      messageId: metadata.run_id,
+                      toolCallId: output.tool_call_id,
+                      conversationId: metadata.thread_id,
+                    })
+                  : null;
+              } else {
+                const file = await saveBase64Image(url, {
+                  req,
+                  file_id,
+                  filename: `${baseFileName}${fallbackExt}`,
+                  endpoint: metadata.provider,
+                  context: FileContext.image_generation,
+                });
+                logger.info('[ToolEnd][image_url:base64] stored', {
+                  url: 'base64',
+                  file_id: file?.file_id,
+                  filepath: file?.filepath,
+                  tool: output.name,
+                  tool_call_id: output.tool_call_id,
+                });
+                fileMetadata = file
+                  ? Object.assign(file, {
+                      messageId: metadata.run_id,
+                      toolCallId: output.tool_call_id,
+                      conversationId: metadata.thread_id,
+                    })
+                  : null;
+              }
+            } catch (error) {
+              logger.error('Error processing artifact content:', error);
+              return null;
             }
 
             if (!fileMetadata) {
+              logger.info('[ToolEnd][image_url] no fileMetadata, returning null');
               return null;
+            }
+
+            logger.info(
+              `[ToolEnd][image_url] fileMetadata ready: ${JSON.stringify({
+                file_id: fileMetadata.file_id,
+                filepath: fileMetadata.filepath,
+                filename: fileMetadata.filename,
+                width: fileMetadata.width,
+                height: fileMetadata.height,
+                messageId: fileMetadata.messageId,
+                toolCallId: fileMetadata.toolCallId,
+                headersSent: res.headersSent,
+              })}`,
+            );
+            // Log if critical fields are missing
+            if (!fileMetadata.filepath || !fileMetadata.width || !fileMetadata.height) {
+              logger.warn(
+                `[ToolEnd][image_url] MISSING CRITICAL FIELDS: filepath=${!!fileMetadata.filepath} width=${!!fileMetadata.width} height=${!!fileMetadata.height}`,
+              );
+            }
+
+            if (!streamId && !res.headersSent) {
+              logger.info('[ToolEnd][image_url] headers not sent, deferring attachment');
+              return fileMetadata;
             }
 
             writeAttachment(res, streamId, fileMetadata);
@@ -618,6 +777,56 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
             logger.error('Error processing artifact content:', error);
             return null;
           }),
+        );
+      }
+      return;
+    }
+
+    // Fallback: if tool output contains http(s) URLs, treat them as images and store them
+    const urlFallbacks = extractUrls(output.output, extractUrls(output.artifact, []));
+    if (urlFallbacks.length > 0) {
+      for (const url of urlFallbacks) {
+        const isHttpUrl = /^https?:\/\//i.test(url);
+        if (!isHttpUrl) {
+          continue;
+        }
+        artifactPromises.push(
+          (async () => {
+            try {
+              const parsedUrl = new URL(url);
+              const ext = path.extname(parsedUrl.pathname) || '.png';
+              const fileName = `${output.name}_${output.tool_call_id}_img_${nanoid()}${ext}`;
+              const fileStrategy = getFileStrategy(req.config, { isImage: true });
+              const file = await processFileURL({
+                URL: url,
+                userId: req.user.id,
+                fileName,
+                basePath: 'images',
+                context: FileContext.image_generation,
+                fileStrategy,
+              });
+              logger.info('[ToolEnd][url_fallback] stored', {
+                url,
+                file_id: file.file_id,
+                filepath: file.filepath,
+                tool: output.name,
+                tool_call_id: output.tool_call_id,
+              });
+              const fileMetadata = Object.assign(file, {
+                messageId: metadata.run_id,
+                toolCallId: output.tool_call_id,
+                conversationId: metadata.thread_id,
+              });
+              if (!streamId && !res.headersSent) {
+                return fileMetadata;
+              }
+              writeAttachment(res, streamId, fileMetadata);
+              return fileMetadata;
+            } catch (error) {
+              logger.error('Error processing url fallback content:', error);
+              return null;
+            }
+          })(),
         );
       }
       return;

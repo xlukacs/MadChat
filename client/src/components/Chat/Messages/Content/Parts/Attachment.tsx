@@ -1,5 +1,13 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
+import { useRecoilValue } from 'recoil';
+import {
+  Loader2,
+  AlertCircle,
+  Download,
+  ChevronDown,
+  ExternalLink,
+  Files as FilesIcon,
+} from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ToolArtifactType } from '~/utils/artifacts';
@@ -22,6 +30,8 @@ import ToolArtifactCard from './ToolArtifactCard';
 import { useAttachmentLink } from './LogLink';
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import { cn, getFileType } from '~/utils';
+import { useFileDownload } from '~/data-provider';
+import store from '~/store';
 
 const COLLAPSED_MAX_HEIGHT = 320;
 
@@ -121,9 +131,18 @@ PreviewPlaceholderCard.displayName = 'PreviewPlaceholderCard';
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
   const file = attachment as TFile & TAttachmentMetadata;
-  const { handleDownload } = useAttachmentLink({
-    href: attachment.filepath ?? '',
-    filename: attachment.filename ?? '',
+  const user = useRecoilValue(store.user);
+  const storedFile = attachment as Partial<TFile & TAttachmentMetadata>;
+  const hasStoredFileId =
+    typeof storedFile.file_id === 'string' && storedFile.file_id.length > 0;
+  const fileId = hasStoredFileId ? (storedFile.file_id as string) : '';
+  const filename = attachment.filename ?? '';
+  const filepath = attachment.filepath ?? '';
+ 
+  const { refetch: downloadStoredFile } = useFileDownload(user?.id ?? '', fileId);
+  const { handleDownload: handleCodeOutputDownload } = useAttachmentLink({
+    href: filepath,
+    filename,
     file_id: file.file_id,
     user: file.user,
     source: file.source,
@@ -142,9 +161,52 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return () => clearTimeout(timer);
   }, []);
 
-  if (!attachment.filepath) {
+  if (!filepath) {
     return null;
   }
+
+  const getObjectUrl = async (): Promise<string | null> => {
+    if (hasStoredFileId) {
+      const stream = await downloadStoredFile();
+      return typeof stream.data === 'string' && stream.data.length > 0 ? stream.data : null;
+    }
+    return null;
+  };
+
+  const handleDownload = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (hasStoredFileId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const url = await getObjectUrl();
+      if (!url) {
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename || 'file');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      return;
+    }
+    return handleCodeOutputDownload(e);
+  };
+
+  const handleOpen = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (hasStoredFileId) {
+      const url = await getObjectUrl();
+      if (!url) {
+        return;
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    window.open(filepath, '_blank', 'noopener,noreferrer');
+  };
+
   /* Pending or failed: render the card-shaped placeholder rather than
    * the small file chip. Visual continuity with `ToolArtifactCard` so
    * when the deferred render lands and the routing upgrades to
@@ -185,14 +247,34 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
         WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
-      <FileContainer
-        file={attachment}
-        onClick={handleDownload}
-        overrideType={extension}
-        displayName={displayFilename(attachment.filename)}
-        containerClassName="max-w-fit"
-        buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
-      />
+      <div className="group relative max-w-fit">
+        <FileContainer
+          file={attachment}
+          onClick={handleDownload}
+          overrideType={extension}
+          displayName={displayFilename(attachment.filename)}
+          containerClassName="max-w-fit"
+          buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
+        />
+        <div className="pointer-events-none absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={handleOpen}
+            className="pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-light bg-surface-primary text-text-secondary shadow-sm hover:bg-surface-hover"
+            aria-label="Open file"
+          >
+            <ExternalLink className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-light bg-surface-primary text-text-secondary shadow-sm hover:bg-surface-hover"
+            aria-label="Download file"
+          >
+            <Download className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 });

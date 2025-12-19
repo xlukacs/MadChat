@@ -105,43 +105,46 @@ This violates RFC 7235 and may cause issues with strict OAuth clients. Removing 
 let openidConfig = null;
 
 /**
- * Custom OpenID Strategy
+ * Creates the CustomOpenIDStrategy class
+ * Must be called after OpenIDStrategy is dynamically imported
  *
  * Note: Originally overrode currentUrl() to work around Express 4's req.host not including port.
  * With Express 5, req.host now includes the port by default, but we continue to use DOMAIN_SERVER
  * for consistency and explicit configuration control.
  * More info: https://github.com/panva/openid-client/pull/713
  */
-class CustomOpenIDStrategy extends OpenIDStrategy {
-  currentUrl(req) {
-    const hostAndProtocol = process.env.DOMAIN_SERVER;
-    return new URL(`${hostAndProtocol}${req.originalUrl ?? req.url}`);
-  }
-
-  authorizationRequestParams(req, options) {
-    const params = super.authorizationRequestParams(req, options);
-    if (options?.state && !params.has('state')) {
-      params.set('state', options.state);
+function createCustomOpenIDStrategy() {
+  return class CustomOpenIDStrategy extends OpenIDStrategy {
+    currentUrl(req) {
+      const hostAndProtocol = process.env.DOMAIN_SERVER;
+      return new URL(`${hostAndProtocol}${req.originalUrl ?? req.url}`);
     }
 
-    if (process.env.OPENID_AUDIENCE) {
-      params.set('audience', process.env.OPENID_AUDIENCE);
-      logger.debug(
-        `[openidStrategy] Adding audience to authorization request: ${process.env.OPENID_AUDIENCE}`,
-      );
-    }
+    authorizationRequestParams(req, options) {
+      const params = super.authorizationRequestParams(req, options);
+      if (options?.state && !params.has('state')) {
+        params.set('state', options.state);
+      }
 
-    /** Generate nonce for federated providers that require it */
-    const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
-    if (shouldGenerateNonce && !params.has('nonce') && this._sessionKey) {
-      const crypto = require('crypto');
-      const nonce = crypto.randomBytes(16).toString('hex');
-      params.set('nonce', nonce);
-      logger.debug('[openidStrategy] Generated nonce for federated provider:', nonce);
-    }
+      if (process.env.OPENID_AUDIENCE) {
+        params.set('audience', process.env.OPENID_AUDIENCE);
+        logger.debug(
+          `[openidStrategy] Adding audience to authorization request: ${process.env.OPENID_AUDIENCE}`,
+        );
+      }
 
-    return params;
-  }
+      /** Generate nonce for federated providers that require it */
+      const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
+      if (shouldGenerateNonce && !params.has('nonce') && this._sessionKey) {
+        const crypto = require('crypto');
+        const nonce = crypto.randomBytes(16).toString('hex');
+        params.set('nonce', nonce);
+        logger.debug('[openidStrategy] Generated nonce for federated provider:', nonce);
+      }
+
+      return params;
+    }
+  };
 }
 
 /**
@@ -767,6 +770,11 @@ const setupOpenIdAdmin = (openidConfig) => {
  */
 async function setupOpenId() {
   try {
+    // Dynamically import ESM modules
+    client = await import('openid-client');
+    const passportOpenId = await import('openid-client/passport');
+    OpenIDStrategy = passportOpenId.Strategy;
+
     const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
 
     /** @type {ClientMetadata} */
