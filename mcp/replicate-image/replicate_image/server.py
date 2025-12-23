@@ -19,7 +19,7 @@ DEFAULT_MODEL = "openai/gpt-image-1.5"
 @mcp.tool()
 async def generate_image(
     prompt: str, 
-    aspect_ratio: str = "1:1", 
+    aspect_ratio: str = "3:2", 
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
@@ -60,7 +60,7 @@ async def generate_image(
 async def edit_image(
     image_url: str, 
     prompt: str, 
-    aspect_ratio: str = "1:1", 
+    aspect_ratio: str = "3:2", 
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
