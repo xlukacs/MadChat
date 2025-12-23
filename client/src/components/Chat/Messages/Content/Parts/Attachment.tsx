@@ -1,16 +1,27 @@
 import { memo, useState, useEffect } from 'react';
+import { useRecoilValue } from 'recoil';
+import { Download, ExternalLink } from 'lucide-react';
 import { imageExtRegex, Tools } from 'librechat-data-provider';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import Image from '~/components/Chat/Messages/Content/Image';
 import { useAttachmentLink } from './LogLink';
+import { useFileDownload } from '~/data-provider';
 import { cn } from '~/utils';
+import store from '~/store';
 
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
-  const { handleDownload } = useAttachmentLink({
-    href: attachment.filepath ?? '',
-    filename: attachment.filename ?? '',
+  const user = useRecoilValue(store.user);
+  const hasStoredFileId = typeof (attachment as any).file_id === 'string' && (attachment as any).file_id.length > 0;
+  const fileId = hasStoredFileId ? ((attachment as any).file_id as string) : '';
+  const filename = attachment.filename ?? '';
+  const filepath = attachment.filepath ?? '';
+ 
+  const { refetch: downloadStoredFile } = useFileDownload(user?.id ?? '', fileId);
+  const { handleDownload: handleCodeOutputDownload } = useAttachmentLink({
+    href: filepath,
+    filename,
   });
   const extension = attachment.filename?.split('.').pop();
 
@@ -19,9 +30,56 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return () => clearTimeout(timer);
   }, []);
 
-  if (!attachment.filepath) {
+  if (!filepath) {
     return null;
   }
+ 
+  const getObjectUrl = async (): Promise<string | null> => {
+    if (hasStoredFileId) {
+      const stream = await downloadStoredFile();
+      return typeof stream.data === 'string' && stream.data.length > 0 ? stream.data : null;
+    }
+    return null;
+  };
+ 
+  const handleDownload = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    // For stored files (DB), download via /api/files/download/:user/:file_id
+    if (hasStoredFileId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const url = await getObjectUrl();
+      if (!url) {
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename || 'file');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      return;
+    }
+    // Fallback for code outputs (already returns a blob URL internally)
+    return handleCodeOutputDownload(e);
+  };
+ 
+  const handleOpen = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (hasStoredFileId) {
+      const url = await getObjectUrl();
+      if (!url) {
+        return;
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+      // Intentionally do NOT revoke immediately; new tab needs it.
+      return;
+    }
+    // For non-stored outputs, best-effort open original href
+    window.open(filepath, '_blank', 'noopener,noreferrer');
+  };
+ 
   return (
     <div
       className={cn(
@@ -35,13 +93,33 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
         WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
-      <FileContainer
-        file={attachment}
-        onClick={handleDownload}
-        overrideType={extension}
-        containerClassName="max-w-fit"
-        buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
-      />
+      <div className="group relative max-w-fit">
+        <FileContainer
+          file={attachment}
+          onClick={handleDownload}
+          overrideType={extension}
+          containerClassName="max-w-fit"
+          buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
+        />
+        <div className="pointer-events-none absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={handleOpen}
+            className="pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-light bg-surface-primary text-text-secondary shadow-sm hover:bg-surface-hover"
+            aria-label="Open file"
+          >
+            <ExternalLink className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-light bg-surface-primary text-text-secondary shadow-sm hover:bg-surface-hover"
+            aria-label="Download file"
+          >
+            <Download className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 });

@@ -44,6 +44,9 @@ const { createMCPTool, createMCPTools } = require('~/server/services/MCP');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getRoleByName } = require('~/models/Role');
+const SaveEditedFile = require('~/app/clients/tools/structured/save_edited_file');
+const RetrieveFileToArtifact = require('~/app/clients/tools/structured/retrieve_file_to_artifact');
+const ListAccessibleFiles = require('~/app/clients/tools/structured/list_accessible_files');
 
 /**
  * Validates the availability and authentication of tools for a user based on environment variables or user-specific plugin authentication values.
@@ -217,6 +220,25 @@ const loadTools = async ({
         imageOutputType,
         fileStrategy,
         imageFiles,
+      });
+    },
+    save_edited_file: async (_toolContextMap) => {
+      // Runtime tool: requires req/res injection from `options`
+      return new SaveEditedFile({
+        req: options.req,
+        res: options.res,
+      });
+    },
+    retrieve_file_to_artifact: async (_toolContextMap) => {
+      return new RetrieveFileToArtifact({
+        req: options.req,
+        res: options.res,
+      });
+    },
+    list_accessible_files: async (_toolContextMap) => {
+      return new ListAccessibleFiles({
+        req: options.req,
+        res: options.res,
       });
     },
   };

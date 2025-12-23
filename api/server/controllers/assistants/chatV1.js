@@ -36,6 +36,26 @@ const { checkBalance } = require('~/models/balanceMethods');
 const { getConvo } = require('~/models/Conversation');
 const getLogStores = require('~/cache/getLogStores');
 const { getOpenAIClient } = require('./helpers');
+const { getCachedTools } = require('~/server/services/Config');
+const path = require('path');
+ 
+const SAVE_EDITED_FILE_TOOL = 'save_edited_file';
+const RETRIEVE_FILE_TO_ARTIFACT_TOOL = 'retrieve_file_to_artifact';
+const TEXT_EXT_ALLOWLIST = new Set(['.txt', '.md', '.json', '.js', '.ts', '.csv']);
+const shouldEnableSaveEditedFile = (files = []) => {
+  if (!Array.isArray(files) || files.length === 0) {
+    return false;
+  }
+  return files.some((f) => {
+    const filename = (f && f.filename) || '';
+    const type = (f && f.type) || '';
+    if (typeof type === 'string' && type.startsWith('image/')) {
+      return false;
+    }
+    const ext = path.extname(filename).toLowerCase();
+    return TEXT_EXT_ALLOWLIST.has(ext);
+  });
+};
 
 /**
  * @route POST /
@@ -317,6 +337,31 @@ const chatV1 = async (req, res) => {
       endpointOption,
       clientTimestamp,
     });
+ 
+    // Make save_edited_file available when a text-like file is attached.
+    if (shouldEnableSaveEditedFile(files)) {
+      try {
+        const toolDefinitions = await getCachedTools();
+        const toolDef = toolDefinitions?.[SAVE_EDITED_FILE_TOOL];
+        const retrieveToolDef = toolDefinitions?.[RETRIEVE_FILE_TO_ARTIFACT_TOOL];
+        if (toolDef) {
+          body.tools = Array.isArray(body.tools) ? body.tools : [];
+          if (!body.tools.some((t) => t?.function?.name === SAVE_EDITED_FILE_TOOL)) {
+            body.tools.push(toolDef);
+          }
+          body.additional_instructions = `${body.additional_instructions ?? ''}\n\n## Edited file outputs\nWhen the user asks you to modify an attached text file (txt/md/json/js/ts/csv):\n1) Call \`${SAVE_EDITED_FILE_TOOL}\` with \`source_file_id\` and the FULL updated \`content\`.\n2) Then respond with EXACTLY ONE enclosed artifact block containing the edited content:\n\`\`\`\n:::artifact{type=\"text/markdown\" title=\"FILENAME_HERE\" identifier=\"FILE_ID_HERE\"}\n...paste the full edited content here...\n:::\n\`\`\`\nDo not include additional artifact blocks. The artifact body must be the complete updated file content.`.trim();
+        }
+        if (retrieveToolDef) {
+          body.tools = Array.isArray(body.tools) ? body.tools : [];
+          if (!body.tools.some((t) => t?.function?.name === RETRIEVE_FILE_TO_ARTIFACT_TOOL)) {
+            body.tools.push(retrieveToolDef);
+          }
+          body.additional_instructions = `${body.additional_instructions ?? ''}\n\n## File retrieval to artifact\nIf you need to re-open/reuse a previously uploaded file by its file_id, call \`${RETRIEVE_FILE_TO_ARTIFACT_TOOL}\` with \`source_file_id\`.\nAfter calling it, you MUST respond with EXACTLY ONE enclosed artifact block (Markdown) using the returned file_id as the artifact identifier:\n\`\`\`\n:::artifact{type=\"text/markdown\" title=\"FILENAME_HERE\" identifier=\"FILE_ID_HERE\"}\n...paste the full file content here...\n:::\n\`\`\``.trim();
+        }
+      } catch (e) {
+        logger.warn('[assistants/chatV1] Failed to inject save_edited_file tool:', e);
+      }
+    }
 
     const getRequestFileIds = async () => {
       let thread_file_ids = [];
