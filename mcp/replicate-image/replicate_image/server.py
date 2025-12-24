@@ -1,9 +1,8 @@
 import os
 import replicate
 import logging
-from typing import List, Optional
+from typing import List
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +18,6 @@ DEFAULT_MODEL = "openai/gpt-image-1.5"
 @mcp.tool()
 async def generate_image(
     prompt: str, 
-    aspect_ratio: str = "3:2", 
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
@@ -28,7 +26,6 @@ async def generate_image(
     
     Args:
         prompt: Text description of the image to generate.
-        aspect_ratio: Aspect ratio of the generated image (e.g., "1:1", "16:9", "4:3").
         num_outputs: Number of images to generate (1-4).
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
     """
@@ -41,7 +38,7 @@ async def generate_image(
             model,
             input={
                 "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
+                "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }
@@ -60,7 +57,6 @@ async def generate_image(
 async def edit_image(
     image_url: str, 
     prompt: str, 
-    aspect_ratio: str = "3:2", 
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
@@ -70,7 +66,6 @@ async def edit_image(
     Args:
         image_url: URL of the image to edit.
         prompt: Instructions for how to edit or transform the image.
-        aspect_ratio: Aspect ratio of the result.
         num_outputs: Number of variations to generate.
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
     """
@@ -82,7 +77,7 @@ async def edit_image(
             input={
                 "image": image_url,
                 "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
+                "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }
