@@ -1,5 +1,7 @@
 /* eslint-disable react-hooks/rules-of-hooks */
-import { ArrowUpDown, ArrowUp, ArrowDown, Database } from 'lucide-react';
+import { useCallback } from 'react';
+import { useRecoilValue } from 'recoil';
+import { ArrowUpDown, ArrowUp, ArrowDown, Database, Download } from 'lucide-react';
 import { FileSources, FileContext } from 'librechat-data-provider';
 import {
   Button,
@@ -8,12 +10,15 @@ import {
   TooltipAnchor,
   AzureMinimalIcon,
   OpenAIMinimalIcon,
+  useToastContext,
 } from '@librechat/client';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
 import ImagePreview from '~/components/Chat/Input/Files/ImagePreview';
 import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { TranslationKeys, useLocalize } from '~/hooks';
+import { useFileDownload } from '~/data-provider/Files/queries';
+import store from '~/store';
 import { SortFilterHeader } from './SortFilterHeader';
 import { formatDate, getFileType } from '~/utils';
 
@@ -25,6 +30,72 @@ const contextMap: Record<any, TranslationKeys> = {
   [FileContext.assistants_output]: 'com_ui_assistants_output',
   [FileContext.message_attachment]: 'com_ui_attachment',
 };
+
+function DownloadCell({ file }: { file: TFile }) {
+  const localize = useLocalize();
+  const user = useRecoilValue(store.user);
+  const { showToast } = useToastContext();
+  const { refetch: downloadFile } = useFileDownload(user?.id ?? '', file.file_id);
+
+  const handleDownload = useCallback(
+    async (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (!file.file_id) {
+        showToast({
+          status: 'error',
+          message: localize('com_ui_download_error'),
+        });
+        return;
+      }
+
+      try {
+        const stream = await downloadFile();
+        if (stream.data == null || stream.data === '') {
+          console.error('Error downloading file: No data found');
+          showToast({
+            status: 'error',
+            message: localize('com_ui_download_error'),
+          });
+          return;
+        }
+        const link = document.createElement('a');
+        link.href = stream.data;
+        link.setAttribute('download', file.filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(stream.data);
+      } catch (error) {
+        console.error('Error downloading file:', error);
+        showToast({
+          status: 'error',
+          message: localize('com_ui_download_error'),
+        });
+      }
+    },
+    [file.file_id, file.filename, downloadFile, localize, showToast],
+  );
+
+  return (
+    <TooltipAnchor
+      description={localize('com_ui_download')}
+      side="top"
+      render={
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleDownload}
+          className="h-8 w-8 p-0 hover:bg-surface-hover"
+          aria-label={localize('com_ui_download')}
+        >
+          <Download className="h-4 w-4" />
+        </Button>
+      }
+    />
+  );
+}
 
 export const columns: ColumnDef<TFile>[] = [
   {
@@ -290,5 +361,18 @@ export const columns: ColumnDef<TFile>[] = [
 
       return `${value}${suffix}`;
     },
+  },
+  {
+    id: 'download',
+    size: 60,
+    header: () => {
+      const localize = useLocalize();
+      return <span className="text-xs sm:text-sm">{localize('com_ui_download')}</span>;
+    },
+    cell: ({ row }) => {
+      return <DownloadCell file={row.original} />;
+    },
+    enableSorting: false,
+    enableHiding: false,
   },
 ];
