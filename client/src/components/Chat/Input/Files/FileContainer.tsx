@@ -3,6 +3,7 @@ import type { ExtendedFile } from '~/common';
 import { getFileType, cn } from '~/utils';
 import FilePreview from './FilePreview';
 import RemoveFile from './RemoveFile';
+import DownloadFile from './DownloadFile';
 
 const FileContainer = ({
   file,
@@ -49,6 +50,7 @@ const FileContainer = ({
         </div>
       </button>
       {onDelete && <RemoveFile onRemove={onDelete} />}
+      <DownloadFile file={file} />
     </div>
   );
 };

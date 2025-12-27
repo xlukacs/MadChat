@@ -36,6 +36,7 @@ import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import { useFileMapContext, useChatContext } from '~/Providers';
 import { useLocalize, useUpdateFiles } from '~/hooks';
 import { useGetFileConfig } from '~/data-provider';
+import { cn } from '~/utils';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -200,18 +201,16 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
       </div>
 
       <div className="rounded-lg border border-border-light bg-transparent shadow-sm transition-colors">
-        <div className="overflow-x-auto">
-          <Table>
+        <Table>
             <TableHeader>
               {table.getHeaderGroups().map((headerGroup) => (
                 <TableRow key={headerGroup.id} className="border-b border-border-light">
                   {headerGroup.headers.map((header, index) => (
                     <TableHead
                       key={header.id}
-                      style={{ width: index === 0 ? '75%' : '25%' }}
-                      className="bg-surface-secondary py-3 text-left text-sm font-medium text-text-secondary"
+                      className="bg-surface-secondary py-2 text-left text-xs font-medium text-text-secondary"
                     >
-                      <div className="px-4">
+                      <div className="px-2">
                         {header.isPlaceholder
                           ? null
                           : flexRender(header.column.columnDef.header, header.getContext())}
@@ -234,17 +233,20 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
 
                       return (
                         <TableCell
-                          style={{
-                            width: '150px',
-                            maxWidth: '150px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                          className={
+                          className={cn(
+                            'px-2 py-2',
                             isFilenameCell
-                              ? 'focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-text-primary'
-                              : ''
+                              ? 'min-w-0 max-w-0 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-text-primary'
+                              : '',
+                            cell.column.id === 'updatedAt' && 'text-right',
+                            cell.column.id === 'download' && 'w-10'
+                          )}
+                          style={
+                            isFilenameCell
+                              ? {
+                                  maxWidth: '1px',
+                                }
+                              : undefined
                           }
                           data-skip-refocus="true"
                           key={cell.id}
@@ -296,7 +298,6 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
               )}
             </TableBody>
           </Table>
-        </div>
       </div>
 
       <div className="flex items-center justify-between">
