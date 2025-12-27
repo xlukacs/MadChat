@@ -138,7 +138,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   const fileId = hasStoredFileId ? (storedFile.file_id as string) : '';
   const filename = attachment.filename ?? '';
   const filepath = attachment.filepath ?? '';
- 
+
   const { refetch: downloadStoredFile } = useFileDownload(user?.id ?? '', fileId);
   const { handleDownload: handleCodeOutputDownload } = useAttachmentLink({
     href: filepath,
@@ -624,6 +624,7 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
    * to PanelArtifact in place. */
   const panelRow: Array<{ attachment: TAttachment; type: ToolArtifactType | null }> = [];
   const mermaidArtifacts: TAttachment[] = [];
+  const seenAttachments = new Set<string>();
 
   attachments.forEach((attachment) => {
     if (attachment.type === Tools.web_search) {
@@ -632,6 +633,20 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
     if (isInternalSandboxArtifact(attachment)) {
       return;
     }
+
+    const fileId = (attachment as Partial<TFile>).file_id;
+    const uniqueKey =
+      attachment.filepath ||
+      (typeof fileId === 'string' ? fileId : '') ||
+      attachment.filename ||
+      '';
+    if (uniqueKey && seenAttachments.has(uniqueKey)) {
+      return;
+    }
+    if (uniqueKey) {
+      seenAttachments.add(uniqueKey);
+    }
+
     if (isImageAttachment(attachment)) {
       imageAttachments.push(attachment);
       return;
