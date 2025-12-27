@@ -36,6 +36,7 @@ import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import { useFileMapContext, useChatContext } from '~/Providers';
 import { useLocalize, useUpdateFiles } from '~/hooks';
 import { useGetFileConfig } from '~/data-provider';
+import { cn } from '~/utils';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -223,7 +224,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                     <TableHead
                       key={header.id}
                       style={{ width: index === 0 ? '75%' : '25%' }}
-                      className="bg-surface-secondary py-2 text-sm font-medium text-text-secondary"
+                      className="bg-surface-secondary py-2 text-left text-xs font-medium text-text-secondary"
                     >
                       <div className={index === 0 ? 'px-2' : 'flex justify-end px-1'}>
                         {header.isPlaceholder
@@ -248,17 +249,20 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
 
                       return (
                         <TableCell
-                          style={{
-                            width: isFilenameCell ? '75%' : '25%',
-                            maxWidth: 0,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                          className={
+                          className={cn(
+                            'px-2 py-2',
                             isFilenameCell
-                              ? 'focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-text-primary'
-                              : ''
+                              ? 'min-w-0 max-w-0 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-text-primary'
+                              : '',
+                            cell.column.id === 'updatedAt' && 'text-right',
+                            cell.column.id === 'download' && 'w-10'
+                          )}
+                          style={
+                            isFilenameCell
+                              ? {
+                                  maxWidth: '1px',
+                                }
+                              : undefined
                           }
                           data-skip-refocus="true"
                           key={cell.id}
