@@ -1,9 +1,9 @@
 import os
 import replicate
 import logging
+import re
 from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,10 +16,60 @@ mcp = FastMCP("Replicate Image Server")
 # Note: Ensure this matches the exact identifier on Replicate
 DEFAULT_MODEL = "openai/gpt-image-1.5"
 
+# Pattern to match image URLs
+IMAGE_URL_PATTERN = re.compile(
+    r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)',
+    re.IGNORECASE
+)
+REPLICATE_DELIVERY_PATTERN = re.compile(
+    r'https?://replicate\.delivery/[^\s"\'<>]+',
+    re.IGNORECASE
+)
+DATA_URI_PATTERN = re.compile(
+    r'data:image/[^;]+;base64,[^\s"\'<>]+',
+    re.IGNORECASE
+)
+
+def extract_image_urls(text: str) -> List[str]:
+    """Extract image URLs from text."""
+    urls = []
+    
+    # Check for data URIs
+    data_uris = DATA_URI_PATTERN.findall(text)
+    urls.extend(data_uris)
+    
+    # Check for replicate delivery URLs
+    replicate_urls = REPLICATE_DELIVERY_PATTERN.findall(text)
+    urls.extend(replicate_urls)
+    
+    # Check for standard image URLs
+    image_urls = IMAGE_URL_PATTERN.findall(text)
+    urls.extend(image_urls)
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+    
+    return unique_urls
+
+def find_image_from_context(context: Optional[str] = None) -> Optional[str]:
+    """Find the last image URL from conversation context."""
+    if not context:
+        return None
+    
+    urls = extract_image_urls(context)
+    if urls:
+        # Return the last (most recent) image URL
+        return urls[-1]
+    return None
+
 @mcp.tool()
 async def generate_image(
     prompt: str, 
-    aspect_ratio: str = "3:2", 
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
@@ -28,7 +78,6 @@ async def generate_image(
     
     Args:
         prompt: Text description of the image to generate.
-        aspect_ratio: Aspect ratio of the generated image (e.g., "1:1", "16:9", "4:3").
         num_outputs: Number of images to generate (1-4).
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
     """
@@ -41,7 +90,7 @@ async def generate_image(
             model,
             input={
                 "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
+                "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }
@@ -58,31 +107,62 @@ async def generate_image(
 
 @mcp.tool()
 async def edit_image(
-    image_url: str, 
-    prompt: str, 
-    aspect_ratio: str = "3:2", 
+    prompt: str,
+    image_url: Optional[str] = None,
+    conversation_context: Optional[str] = None,
     num_outputs: int = 1,
     model: str = DEFAULT_MODEL
 ) -> List[str]:
     """
     Edit or transform an existing image using a text prompt.
     
+    The image can be provided in three ways:
+    1. Explicitly via the image_url parameter
+    2. Automatically extracted from conversation_context (last image URL found)
+    3. From environment variable CONVERSATION_IMAGES (comma-separated URLs, uses last one)
+    
     Args:
-        image_url: URL of the image to edit.
         prompt: Instructions for how to edit or transform the image.
-        aspect_ratio: Aspect ratio of the result.
-        num_outputs: Number of variations to generate.
+        image_url: Optional URL of the image to edit. If not provided, will try to find from context.
+        conversation_context: Optional conversation text to search for image URLs.
+        num_outputs: Number of variations to generate (1-4).
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
     """
-    logger.info(f"Editing image {image_url} with model {model} and prompt: {prompt}")
+    # Determine which image URL to use
+    final_image_url = image_url
+    
+    if not final_image_url:
+        # Try to find from conversation context
+        if conversation_context:
+            final_image_url = find_image_from_context(conversation_context)
+            if final_image_url:
+                logger.info(f"Found image URL from conversation context: {final_image_url}")
+        
+        # If still not found, try environment variable
+        if not final_image_url:
+            env_images = os.environ.get("CONVERSATION_IMAGES", "")
+            if env_images:
+                urls = [url.strip() for url in env_images.split(",") if url.strip()]
+                if urls:
+                    final_image_url = urls[-1]  # Use last image
+                    logger.info(f"Found image URL from environment: {final_image_url}")
+    
+    if not final_image_url:
+        raise ValueError(
+            "No image URL provided. Please provide image_url parameter, "
+            "or ensure conversation_context contains an image URL, "
+            "or set CONVERSATION_IMAGES environment variable."
+        )
+    
+    logger.info(f"Editing image {final_image_url} with model {model} and prompt: {prompt}")
     
     try:
         output = replicate.run(
             model,
             input={
-                "image": image_url,
+                "image": final_image_url,
                 "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
+                "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }

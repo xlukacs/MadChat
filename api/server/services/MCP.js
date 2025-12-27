@@ -40,9 +40,7 @@ const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/g
  */
 const isImageUrlString = (value) =>
   typeof value === 'string' &&
-  (value.startsWith('http://') ||
-    value.startsWith('https://') ||
-    value.startsWith('data:image/'));
+  (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:image/'));
 
 /**
  * Extract image URLs from any value (string, array, object) recursively
@@ -87,6 +85,95 @@ const extractImageUrls = (value, acc = []) => {
 };
 
 /**
+ * Extract image URLs from conversation messages in requestBody
+ */
+const extractImageUrlsFromConversation = (requestBody) => {
+  if (!requestBody) {
+    return [];
+  }
+
+  const imageUrls = [];
+
+  // Extract from messages array if present
+  if (requestBody.messages && Array.isArray(requestBody.messages)) {
+    for (const message of requestBody.messages) {
+      // Check content array for image URLs
+      if (message.content && Array.isArray(message.content)) {
+        for (const content of message.content) {
+          // Check for image_url type
+          if (content.type === 'image_url' && content.image_url?.url) {
+            const url = content.image_url.url;
+            if (isImageUrlString(url) && !imageUrls.includes(url)) {
+              imageUrls.push(url);
+            }
+          }
+          // Check for image_file type (file_id references)
+          if (content.type === 'image_file' && content.image_file?.file_id) {
+            // Note: file_id references would need to be resolved to URLs
+            // For now, we'll skip these as they need additional processing
+          }
+          // Extract URLs from text content
+          if (content.text || content.type === 'text') {
+            const text = content.text || content[content.type] || '';
+            const urls = extractImageUrls(text, []);
+            urls.forEach((url) => {
+              if (!imageUrls.includes(url)) {
+                imageUrls.push(url);
+              }
+            });
+          }
+        }
+      }
+      // Check for attachments
+      if (message.attachments && Array.isArray(message.attachments)) {
+        for (const attachment of message.attachments) {
+          if (attachment.url && isImageUrlString(attachment.url)) {
+            if (!imageUrls.includes(attachment.url)) {
+              imageUrls.push(attachment.url);
+            }
+          }
+        }
+      }
+      // Extract from any text field in the message
+      if (message.text) {
+        const urls = extractImageUrls(message.text, []);
+        urls.forEach((url) => {
+          if (!imageUrls.includes(url)) {
+            imageUrls.push(url);
+          }
+        });
+      }
+    }
+  }
+
+  // Also check for files array
+  if (requestBody.files && Array.isArray(requestBody.files)) {
+    for (const file of requestBody.files) {
+      if (file.url && isImageUrlString(file.url)) {
+        if (!imageUrls.includes(file.url)) {
+          imageUrls.push(file.url);
+        }
+      }
+      if (file.filepath && isImageUrlString(file.filepath)) {
+        if (!imageUrls.includes(file.filepath)) {
+          imageUrls.push(file.filepath);
+        }
+      }
+    }
+  }
+
+  // Extract from any other fields recursively
+  const allUrls = extractImageUrls(requestBody, []);
+  allUrls.forEach((url) => {
+    if (!imageUrls.includes(url)) {
+      imageUrls.push(url);
+    }
+  });
+
+  return imageUrls;
+};
+
+/**
  * Normalize MCP tool result to include image artifacts if URLs are detected.
  * Returns [textContent, artifact] format for CONTENT_AND_ARTIFACT response.
  */
@@ -98,14 +185,18 @@ const normalizeMCPImageResult = (result) => {
     if (resultPreview && resultPreview.length > 500) {
       resultPreview = resultPreview.slice(0, 500) + '...';
     }
-  } catch (e) {
+  } catch (_e) {
     resultPreview = String(result);
   }
 
-  logger.info(`[MCP][normalizeMCPImageResult] input type=${typeof result} isArray=${Array.isArray(result)} preview=${resultPreview}`);
+  logger.info(
+    `[MCP][normalizeMCPImageResult] input type=${typeof result} isArray=${Array.isArray(result)} preview=${resultPreview}`,
+  );
 
   const urls = extractImageUrls(result, []);
-  logger.info(`[MCP][normalizeMCPImageResult] extracted ${urls.length} URLs: ${JSON.stringify(urls)}`);
+  logger.info(
+    `[MCP][normalizeMCPImageResult] extracted ${urls.length} URLs: ${JSON.stringify(urls)}`,
+  );
 
   if (!urls.length) {
     logger.info('[MCP][normalizeMCPImageResult] no URLs found, returning original result');
@@ -126,7 +217,9 @@ const normalizeMCPImageResult = (result) => {
     },
   ];
 
-  logger.info(`[MCP][normalizeMCPImageResult] returning normalized result with ${urls.length} images`);
+  logger.info(
+    `[MCP][normalizeMCPImageResult] returning normalized result with ${urls.length} images`,
+  );
 
   // Return [content, artifact] format for CONTENT_AND_ARTIFACT
   return [textResponse, { content: artifactContent }];
@@ -506,11 +599,34 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
+      // For replicate-image edit_image tool, extract image URLs from conversation if image_url not provided
+      let finalToolArguments = toolArguments;
+      if (serverName === 'replicate-image' && toolName === 'edit_image') {
+        const args = typeof toolArguments === 'string' ? JSON.parse(toolArguments) : toolArguments;
+
+        // If image_url is not provided, try to extract from conversation
+        if (!args?.image_url) {
+          const requestBody = config?.configurable?.requestBody;
+          const conversationImages = extractImageUrlsFromConversation(requestBody);
+
+          if (conversationImages.length > 0) {
+            // Add conversation context to tool arguments
+            finalToolArguments = {
+              ...args,
+              conversation_context: JSON.stringify(conversationImages.join(' ')),
+            };
+            logger.info(
+              `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} image URLs from conversation`,
+            );
+          }
+        }
+      }
+
       const result = await mcpManager.callTool({
         serverName,
         toolName,
         provider,
-        toolArguments,
+        toolArguments: finalToolArguments,
         options: {
           signal: derivedSignal,
         },
@@ -534,7 +650,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         if (rawResultPreview && rawResultPreview.length > 800) {
           rawResultPreview = rawResultPreview.slice(0, 800) + '...';
         }
-      } catch (e) {
+      } catch (_e) {
         rawResultPreview = String(result);
       }
       logger.info(`[MCP][${serverName}][${toolName}] raw callTool result: ${rawResultPreview}`);

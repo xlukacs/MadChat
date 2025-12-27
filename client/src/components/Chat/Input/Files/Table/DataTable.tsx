@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Download } from 'lucide-react';
 import { useSetRecoilState } from 'recoil';
 import {
   flexRender,
@@ -31,7 +31,7 @@ import {
 } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import { ColumnVisibilityDropdown } from './ColumnVisibilityDropdown';
-import { useDeleteFilesFromTable } from '~/hooks/Files';
+import { useDeleteFilesFromTable, useBulkDownload } from '~/hooks/Files';
 import { useLocalize, TranslationKeys } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -61,6 +61,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
   const [isDeleting, setIsDeleting] = useState(false);
   const setFiles = useSetRecoilState(store.filesByIndex(0));
   const { deleteFiles } = useDeleteFilesFromTable(() => setIsDeleting(false));
+  const { downloadFilesAsZip, isDownloading } = useBulkDownload();
 
   const [rowSelection, setRowSelection] = useState({});
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -114,6 +115,24 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
             <TrashIcon className="size-3.5 text-red-400 sm:size-4" />
           )}
           {!isSmallScreen && <span className="ml-2">{localize('com_ui_delete')}</span>}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => {
+            const filesToDownload = table
+              .getFilteredSelectedRowModel()
+              .rows.map((row) => row.original);
+            downloadFilesAsZip(filesToDownload as TFile[]);
+          }}
+          disabled={!table.getFilteredSelectedRowModel().rows.length || isDownloading}
+          className={cn('min-w-[40px] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
+        >
+          {isDownloading ? (
+            <Spinner className="size-3.5 sm:size-4" />
+          ) : (
+            <Download className="size-3.5 text-blue-400 sm:size-4" />
+          )}
+          {!isSmallScreen && <span className="ml-2">{localize('com_ui_download')}</span>}
         </Button>
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-text-secondary" />
