@@ -13,11 +13,12 @@ import store from '~/store';
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
   const user = useRecoilValue(store.user);
-  const hasStoredFileId = typeof (attachment as any).file_id === 'string' && (attachment as any).file_id.length > 0;
+  const hasStoredFileId =
+    typeof (attachment as any).file_id === 'string' && (attachment as any).file_id.length > 0;
   const fileId = hasStoredFileId ? ((attachment as any).file_id as string) : '';
   const filename = attachment.filename ?? '';
   const filepath = attachment.filepath ?? '';
- 
+
   const { refetch: downloadStoredFile } = useFileDownload(user?.id ?? '', fileId);
   const { handleDownload: handleCodeOutputDownload } = useAttachmentLink({
     href: filepath,
@@ -33,7 +34,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   if (!filepath) {
     return null;
   }
- 
+
   const getObjectUrl = async (): Promise<string | null> => {
     if (hasStoredFileId) {
       const stream = await downloadStoredFile();
@@ -41,7 +42,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     }
     return null;
   };
- 
+
   const handleDownload = async (e: React.MouseEvent<HTMLButtonElement>) => {
     // For stored files (DB), download via /api/files/download/:user/:file_id
     if (hasStoredFileId) {
@@ -63,7 +64,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     // Fallback for code outputs (already returns a blob URL internally)
     return handleCodeOutputDownload(e);
   };
- 
+
   const handleOpen = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -79,7 +80,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     // For non-stored outputs, best-effort open original href
     window.open(filepath, '_blank', 'noopener,noreferrer');
   };
- 
+
   return (
     <div
       className={cn(
@@ -186,8 +187,23 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
 
   const fileAttachments: TAttachment[] = [];
   const imageAttachments: TAttachment[] = [];
+  const seenAttachments = new Set<string>();
 
   attachments.forEach((attachment) => {
+    // Generate a unique key for deduplication: prefer filepath, then file_id, then filename
+    const fileId =
+      typeof (attachment as any).file_id === 'string' ? (attachment as any).file_id : null;
+    const uniqueKey = attachment.filepath || fileId || attachment.filename || '';
+
+    // Skip if we've already seen this attachment
+    if (uniqueKey && seenAttachments.has(uniqueKey)) {
+      return;
+    }
+
+    if (uniqueKey) {
+      seenAttachments.add(uniqueKey);
+    }
+
     const { width, height, filepath = null } = attachment as TFile & TAttachmentMetadata;
     const isImage = attachment.filename
       ? imageExtRegex.test(attachment.filename) &&
