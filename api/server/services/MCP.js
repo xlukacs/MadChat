@@ -29,14 +29,11 @@ const {
 } = require('~/config');
 const { findToken, createToken, updateToken } = require('~/models');
 const { getMessages } = require('~/models/Message');
-const { findFileById } = require('~/models/File');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
 const fs = require('fs');
 const path = require('path');
-const FormData = require('form-data');
-const axios = require('axios');
 
 const IMAGE_URL_PATTERN = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)/gi;
 const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/gi;
@@ -91,13 +88,12 @@ const extractImageUrls = (value, acc = []) => {
 };
 
 /**
- * Upload local file to UploadThing and get public URL
- * Requires UPLOADTHING_SECRET environment variable
+ * Upload local file to S3 and get public URL
+ * Uses the configured file storage strategy (S3, Azure, Firebase, or Local)
  */
-const uploadToUploadThing = async (localFilePath, appConfig) => {
-  const uploadThingSecret = process.env.UPLOADTHING_SECRET;
-  if (!uploadThingSecret) {
-    logger.warn('[MCP] UPLOADTHING_SECRET not set, skipping UploadThing upload');
+const uploadToCloudStorage = async (localFilePath, appConfig, userId) => {
+  if (!appConfig) {
+    logger.warn('[MCP] App config not provided, cannot upload to cloud storage');
     return null;
   }
 
@@ -124,64 +120,53 @@ const uploadToUploadThing = async (localFilePath, appConfig) => {
     const fileBuffer = fs.readFileSync(fullPath);
     const fileName = path.basename(fullPath);
 
-    // UploadThing REST API endpoint
-    // Note: This uses UploadThing's REST API. You may need to adjust the endpoint
-    // based on your UploadThing setup. Alternatively, you can use the @uploadthing/server package.
-    const uploadUrl = process.env.UPLOADTHING_URL || 'https://uploadthing.com/api/uploadFiles';
+    logger.info(
+      `[MCP] Uploading to cloud storage: ${fileName} (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
+    );
 
-    // Create form data
-    const formData = new FormData();
-    formData.append('files', fileBuffer, {
-      filename: fileName,
-      contentType: 'application/octet-stream',
-    });
+    // Get the storage strategy functions
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const strategyFunctions = getStrategyFunctions(appConfig.fileStrategy);
 
-    // Make upload request
-    // UploadThing typically uses 'X-Uploadthing-Secret' or 'Authorization' header
-    const response = await axios.post(uploadUrl, formData, {
-      headers: {
-        ...formData.getHeaders(),
-        'X-Uploadthing-Secret': uploadThingSecret,
-        // Alternative: 'Authorization': `Bearer ${uploadThingSecret}`,
-      },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-    });
-
-    // Handle different response formats
-    let uploadedUrl = null;
-    if (response.data) {
-      // Array format: [{ url: '...' }]
-      if (Array.isArray(response.data) && response.data[0]?.url) {
-        uploadedUrl = response.data[0].url;
-      }
-      // Object format: { url: '...' } or { data: [{ url: '...' }] }
-      else if (response.data.url) {
-        uploadedUrl = response.data.url;
-      } else if (response.data.data?.[0]?.url) {
-        uploadedUrl = response.data.data[0].url;
-      }
+    if (!strategyFunctions?.saveBuffer) {
+      logger.warn(
+        `[MCP] Storage strategy "${appConfig.fileStrategy}" does not support saveBuffer. Cannot upload file.`,
+      );
+      return null;
     }
 
-    if (uploadedUrl) {
-      logger.info(`[MCP] Successfully uploaded to UploadThing: ${fileName} -> ${uploadedUrl}`);
-      return uploadedUrl;
+    // Determine base path based on file location
+    const basePath = localFilePath.startsWith('/images/') ? 'images' : 'uploads';
+
+    // Upload using the storage strategy
+    const publicUrl = await strategyFunctions.saveBuffer({
+      userId: userId || 'system',
+      buffer: fileBuffer,
+      fileName: fileName,
+      basePath: basePath,
+    });
+
+    if (publicUrl) {
+      logger.info(
+        `[MCP] Successfully uploaded to ${appConfig.fileStrategy}: ${fileName} -> ${publicUrl}`,
+      );
+      return publicUrl;
     }
 
-    logger.error('[MCP] UploadThing response missing URL:', response.data);
+    logger.error(`[MCP] Upload to ${appConfig.fileStrategy} returned no URL`);
     return null;
   } catch (error) {
-    logger.error(`[MCP] Error uploading to UploadThing: ${error.message}`, error);
+    logger.error(`[MCP] Error uploading to cloud storage: ${error.message}`, error);
     return null;
   }
 };
 
 /**
  * Convert local file path to public URL
- * For local storage, tries UploadThing first (if configured), then constructs full URL using DOMAIN_SERVER
+ * For local storage, uploads to cloud storage (S3/Azure/Firebase) if configured, otherwise uses DOMAIN_SERVER
  * For cloud storage, the path should already be a full URL
  */
-const convertToPublicURL = async (filePath, appConfig = null) => {
+const convertToPublicURL = async (filePath, appConfig = null, userId = null) => {
   if (!filePath) {
     return null;
   }
@@ -193,27 +178,31 @@ const convertToPublicURL = async (filePath, appConfig = null) => {
 
   // If it's a local path (starts with /images/ or /uploads/), try to get public URL
   if (filePath.startsWith('/images/') || filePath.startsWith('/uploads/')) {
-    // Try UploadThing first if configured
-    if (process.env.UPLOADTHING_SECRET && appConfig) {
-      const uploadThingUrl = await uploadToUploadThing(filePath, appConfig);
-      if (uploadThingUrl) {
-        return uploadThingUrl;
+    // If cloud storage is configured (S3, Azure, Firebase), upload the file
+    if (appConfig && appConfig.fileStrategy && appConfig.fileStrategy !== 'local') {
+      const cloudUrl = await uploadToCloudStorage(filePath, appConfig, userId);
+      if (cloudUrl) {
+        return cloudUrl;
       }
-      // Fall through to DOMAIN_SERVER if UploadThing fails
+      // If cloud upload fails, fall through to DOMAIN_SERVER
+      logger.warn(
+        `[MCP] Failed to upload to ${appConfig.fileStrategy}, falling back to DOMAIN_SERVER: ${filePath}`,
+      );
     }
 
-    // Fallback to DOMAIN_SERVER
+    // Fallback to DOMAIN_SERVER (for local storage or if cloud upload failed)
     const domainServer = process.env.DOMAIN_SERVER;
     if (domainServer) {
       // Remove trailing slash from domain if present
       const baseUrl = domainServer.endsWith('/') ? domainServer.slice(0, -1) : domainServer;
+      logger.warn(
+        `[MCP] Using DOMAIN_SERVER for file URL. This may not be accessible to external services if on intranet: ${filePath}`,
+      );
       return `${baseUrl}${filePath}`;
     } else {
-      logger.warn(
-        `[MCP] Local file path found but DOMAIN_SERVER not set. File may not be accessible to external services: ${filePath}`,
+      throw new Error(
+        `Local file path found but no cloud storage configured and DOMAIN_SERVER not set. File cannot be accessed by external services: ${filePath}`,
       );
-      // Return the path as-is, but it likely won't work for external services
-      return filePath;
     }
   }
 
@@ -224,7 +213,7 @@ const convertToPublicURL = async (filePath, appConfig = null) => {
 /**
  * Extract the most recent image URL from conversation
  * Queries the conversation directly, finds the last message with attachments,
- * uploads to UploadThing if needed, and returns the public URL
+ * uploads to S3/Azure/Firebase if configured, and returns the public URL
  */
 const extractImageUrlsFromConversation = async (conversationId) => {
   if (!conversationId) {
@@ -267,11 +256,14 @@ const extractImageUrlsFromConversation = async (conversationId) => {
       return [];
     }
 
-    // Get app config for UploadThing
+    // Get app config for cloud storage upload
     const appConfig = await getAppConfig();
 
-    // Convert to public URL (uploads to UploadThing if needed)
-    const publicUrl = await convertToPublicURL(latestAttachment.filepath, appConfig);
+    // Extract userId from file attachment if available (for S3 path)
+    const userId = latestAttachment.user || null;
+
+    // Convert to public URL (uploads to S3/Azure/Firebase if configured)
+    const publicUrl = await convertToPublicURL(latestAttachment.filepath, appConfig, userId);
 
     if (publicUrl) {
       logger.info(
@@ -741,58 +733,56 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
           );
         }
 
-        // If image_url is not provided, use the extracted image
-        if (!args?.image_url) {
-          if (conversationImages.length > 0) {
-            // Use the last (most recent) image URL
-            let lastImageUrl = conversationImages[conversationImages.length - 1];
+        // Always prioritize extracted images over user-provided image_url
+        // This prevents using hallucinated URLs from the user's input
+        if (conversationImages.length > 0) {
+          // Use the last (most recent) image URL from conversation
+          let lastImageUrl = conversationImages[conversationImages.length - 1];
 
-            // Convert local file paths to public URLs
-            // Get app config for file path resolution
-            const appConfig = await getAppConfig({ userId });
-            const publicUrl = await convertToPublicURL(lastImageUrl, appConfig);
-            if (publicUrl !== lastImageUrl) {
-              logger.info(
-                `[MCP][${serverName}][${toolName}] Converted local path to public URL: ${lastImageUrl} -> ${publicUrl}`,
-              );
-              lastImageUrl = publicUrl;
-            }
-
-            // Warn if using local path that might not be accessible externally
-            if (lastImageUrl.startsWith('/') && !lastImageUrl.startsWith('http')) {
-              logger.warn(
-                `[MCP][${serverName}][${toolName}] Image URL is a local path that may not be accessible to Replicate API. Consider using cloud storage (S3, Firebase, Azure) or UploadThing for intranet deployments: ${lastImageUrl}`,
-              );
-            }
-
-            // Pass the image URL directly and also include conversation context for fallback
-            // conversation_context should be a string, not JSON
-            finalToolArguments = {
-              ...args,
-              image_url: lastImageUrl,
-              conversation_context: conversationImages.join(' '),
-            };
+          // Convert local file paths to public URLs
+          // Get app config for file path resolution
+          const appConfig = await getAppConfig({ userId });
+          const publicUrl = await convertToPublicURL(lastImageUrl, appConfig, userId);
+          if (publicUrl !== lastImageUrl) {
             logger.info(
-              `[MCP][${serverName}][${toolName}] Auto-extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
+              `[MCP][${serverName}][${toolName}] Converted local path to public URL: ${lastImageUrl} -> ${publicUrl}`,
             );
-          } else {
-            logger.warn(
-              `[MCP][${serverName}][${toolName}] No image URLs found in conversation and image_url not provided. Tool may fail.`,
-            );
-            // Still pass conversation_context as empty string (not array) even if no images found
-            finalToolArguments = {
-              ...args,
-              conversation_context: '',
-            };
+            lastImageUrl = publicUrl;
           }
-        } else {
-          // image_url was provided, but still include conversation_context as fallback
+
+          // Warn if using local path that might not be accessible externally
+          if (lastImageUrl.startsWith('/') && !lastImageUrl.startsWith('http')) {
+            logger.warn(
+              `[MCP][${serverName}][${toolName}] Image URL is a local path that may not be accessible to Replicate API. Consider using cloud storage (S3, Firebase, Azure) for intranet deployments: ${lastImageUrl}`,
+            );
+          }
+
+          finalToolArguments = {
+            ...args,
+            image_url: lastImageUrl,
+            conversation_context: conversationImages.join(' '),
+          };
           logger.info(
-            `[MCP][${serverName}][${toolName}] image_url provided by user: ${args.image_url}. Also found ${conversationImages.length} images in conversation for context.`,
+            `[MCP][${serverName}][${toolName}] Auto-extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
+          );
+        } else if (args?.image_url) {
+          // Only use user-provided image_url if no images found in conversation
+          // But warn that it might be a hallucination
+          logger.warn(
+            `[MCP][${serverName}][${toolName}] No images found in conversation, using user-provided image_url (may be incorrect): ${args.image_url}`,
           );
           finalToolArguments = {
             ...args,
-            conversation_context: conversationImages.length > 0 ? conversationImages.join(' ') : '',
+            conversation_context: '',
+          };
+        } else {
+          logger.warn(
+            `[MCP][${serverName}][${toolName}] No image URLs found in conversation and image_url not provided. Tool may fail.`,
+          );
+          // Still pass conversation_context as empty string (not array) even if no images found
+          finalToolArguments = {
+            ...args,
+            conversation_context: '',
           };
         }
       }
