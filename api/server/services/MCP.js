@@ -602,6 +602,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       // For replicate-image edit_image tool, extract image URLs from conversation if image_url not provided
       let finalToolArguments = toolArguments;
       if (serverName === 'replicate-image' && toolName === 'edit_image') {
+        logger.info(`[MCP][${serverName}][${toolName}] Extracting image URLs from conversation`);
         const args = typeof toolArguments === 'string' ? JSON.parse(toolArguments) : toolArguments;
 
         // If image_url is not provided, try to extract from conversation
@@ -610,13 +611,16 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
           const conversationImages = extractImageUrlsFromConversation(requestBody);
 
           if (conversationImages.length > 0) {
-            // Add conversation context to tool arguments
+            // Use the last (most recent) image URL
+            const lastImageUrl = conversationImages[conversationImages.length - 1];
+            // Pass the image URL directly and also include conversation context for fallback
             finalToolArguments = {
               ...args,
+              image_url: lastImageUrl,
               conversation_context: JSON.stringify(conversationImages.join(' ')),
             };
             logger.info(
-              `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} image URLs from conversation`,
+              `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
             );
           }
         }
