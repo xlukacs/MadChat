@@ -174,11 +174,13 @@ async def edit_image(
         output = replicate.run(
             model,
             input={
-                "image": final_image_url,
+                "input_images": [final_image_url],
                 "prompt": prompt,
                 "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
-                "quality": "low"
+                "quality": "low",
+                "moderation": "low",
+                "input_fidelity": "high",
             }
         )
         

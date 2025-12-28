@@ -119,14 +119,22 @@ async function getS3URL({
  * @param {string} params.URL - The source URL of the file.
  * @param {string} params.fileName - The file name to use in S3.
  * @param {string} [params.basePath='images'] - The base path in the bucket.
- * @returns {Promise<string>} Signed URL of the uploaded file.
+ * @returns {Promise<{ bytes: number, type: string, dimensions: Record<string, number> }>} File metadata including dimensions.
  */
 async function saveURLToS3({ userId, URL, fileName, basePath = defaultBasePath }) {
   try {
     const response = await fetch(URL);
     const buffer = await response.buffer();
-    // Optionally you can call getBufferMetadata(buffer) if needed.
-    return await saveBufferToS3({ userId, buffer, fileName, basePath });
+    
+    // Get buffer metadata including dimensions
+    const { getBufferMetadata } = require('~/server/utils/files');
+    const { bytes, type, dimensions } = await getBufferMetadata(buffer);
+    
+    // Upload to S3
+    await saveBufferToS3({ userId, buffer, fileName, basePath });
+    
+    // Return metadata including dimensions
+    return { bytes, type, dimensions };
   } catch (error) {
     logger.error('[saveURLToS3] Error uploading file from URL to S3:', error.message);
     throw error;

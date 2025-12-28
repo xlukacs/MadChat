@@ -162,6 +162,134 @@ const uploadToCloudStorage = async (localFilePath, appConfig, userId) => {
 };
 
 /**
+ * Upload local file to S3 specifically for external access (e.g., Replicate API)
+ * This forces S3 upload even if the main fileStrategy is 'local'
+ * Throws an error if S3 is not available - no fallbacks to DOMAIN_SERVER
+ */
+const uploadToS3ForExternalAccess = async (localFilePath, userId) => {
+  if (!localFilePath) {
+    throw new Error('No file path provided for S3 upload');
+  }
+
+  // If it's already an S3 URL, return as is
+  if (
+    localFilePath.includes('amazonaws.com') ||
+    localFilePath.includes('s3.') ||
+    localFilePath.includes('s3-')
+  ) {
+    logger.info(`[MCP] File is already an S3 URL: ${localFilePath}`);
+    return localFilePath;
+  }
+
+  // If it's a DOMAIN_SERVER URL, extract the local path and upload to S3
+  let actualLocalPath = localFilePath;
+  if (localFilePath.startsWith('http://') || localFilePath.startsWith('https://')) {
+    // Try to extract local path from DOMAIN_SERVER URL
+    const domainServer = process.env.DOMAIN_SERVER;
+    if (domainServer) {
+      const baseUrl = domainServer.endsWith('/') ? domainServer.slice(0, -1) : domainServer;
+      if (localFilePath.startsWith(baseUrl)) {
+        actualLocalPath = localFilePath.replace(baseUrl, '');
+        logger.info(`[MCP] Extracted local path from DOMAIN_SERVER URL: ${actualLocalPath}`);
+      } else {
+        // It's already a public URL (not DOMAIN_SERVER), check if it's S3
+        if (!localFilePath.includes('amazonaws.com') && !localFilePath.includes('s3.')) {
+          throw new Error(
+            `File is already a public URL but not S3. Cannot use non-S3 URLs for Replicate access: ${localFilePath}. Please ensure S3 is configured.`,
+          );
+        }
+        return localFilePath;
+      }
+    } else {
+      throw new Error(
+        `File is already a public URL but S3 is required for Replicate access: ${localFilePath}. Please ensure S3 is configured.`,
+      );
+    }
+  }
+
+  // Only process local paths
+  if (!actualLocalPath.startsWith('/images/') && !actualLocalPath.startsWith('/uploads/')) {
+    throw new Error(
+      `Invalid file path format. Expected local path (/images/... or /uploads/...) but got: ${actualLocalPath}`,
+    );
+  }
+
+  try {
+    const appConfig = await getAppConfig({ userId });
+
+    // Check if S3 is available (even if not the main fileStrategy)
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const { FileSources } = require('librechat-data-provider');
+
+    // Try S3 - this is required, no fallbacks
+    let s3Functions;
+    try {
+      s3Functions = getStrategyFunctions(FileSources.s3);
+    } catch (_e) {
+      throw new Error(
+        'S3 strategy is not available. S3 is required for uploading input images for Replicate API access. Please configure S3 in your environment.',
+      );
+    }
+
+    if (!s3Functions?.saveBuffer) {
+      throw new Error(
+        'S3 saveBuffer function is not available. S3 is required for uploading input images for Replicate API access. Please configure S3 in your environment.',
+      );
+    }
+
+    // Read the file
+    let fullPath;
+    if (actualLocalPath.startsWith('/images/')) {
+      const basePath = actualLocalPath.split('/images/')[1];
+      fullPath = path.join(appConfig.paths.imageOutput, basePath);
+    } else if (actualLocalPath.startsWith('/uploads/')) {
+      const basePath = actualLocalPath.split('/uploads/')[1];
+      fullPath = path.join(appConfig.paths.uploads, basePath);
+    } else {
+      fullPath = actualLocalPath;
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      throw new Error(`File not found for S3 upload: ${fullPath}`);
+    }
+
+    const fileBuffer = fs.readFileSync(fullPath);
+    const fileName = path.basename(fullPath);
+    const basePath = actualLocalPath.startsWith('/images/') ? 'images' : 'uploads';
+
+    logger.info(
+      `[MCP] Uploading to S3 for external access: ${fileName} (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
+    );
+
+    let s3Url;
+    try {
+      s3Url = await s3Functions.saveBuffer({
+        userId: userId || 'system',
+        buffer: fileBuffer,
+        fileName: fileName,
+        basePath: basePath,
+      });
+    } catch (saveError) {
+      throw new Error(
+        `S3 upload failed for file ${fileName}: ${saveError.message}. Please ensure S3 credentials are correct and the bucket is accessible.`,
+      );
+    }
+
+    if (!s3Url || typeof s3Url !== 'string' || s3Url.trim() === '') {
+      throw new Error(
+        `S3 upload completed but no valid URL returned for file: ${fileName}. Please check S3 configuration.`,
+      );
+    }
+
+    logger.info(`[MCP] Successfully uploaded to S3: ${fileName} -> ${s3Url}`);
+    return s3Url;
+  } catch (error) {
+    logger.error(`[MCP] Error uploading to S3 for external access: ${error.message}`, error);
+    throw error; // Re-throw instead of returning null
+  }
+};
+
+/**
  * Convert local file path to public URL
  * For local storage, uploads to cloud storage (S3/Azure/Firebase) if configured, otherwise uses DOMAIN_SERVER
  * For cloud storage, the path should already be a full URL
@@ -739,21 +867,55 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
           // Use the last (most recent) image URL from conversation
           let lastImageUrl = conversationImages[conversationImages.length - 1];
 
-          // Convert local file paths to public URLs
-          // Get app config for file path resolution
-          const appConfig = await getAppConfig({ userId });
-          const publicUrl = await convertToPublicURL(lastImageUrl, appConfig, userId);
-          if (publicUrl !== lastImageUrl) {
-            logger.info(
-              `[MCP][${serverName}][${toolName}] Converted local path to public URL: ${lastImageUrl} -> ${publicUrl}`,
+          // Get the original local filepath from the database (not the converted URL)
+          // We need to pass the local path to uploadToS3ForExternalAccess
+          const { getFiles } = require('~/models/File');
+          const requestBody = config?.configurable?.requestBody;
+          const conversationId = requestBody?.conversationId;
+
+          let localFilePath = null;
+          if (conversationId) {
+            const messages = await getMessages({ conversationId: conversationId });
+            const messageIds = messages.map((msg) => msg.messageId);
+            const fileAttachments = await getFiles(
+              { messageId: { $in: messageIds }, type: { $regex: /^image\//i } },
+              { updatedAt: -1 },
+              {},
             );
-            lastImageUrl = publicUrl;
+            if (fileAttachments.length > 0) {
+              localFilePath = fileAttachments[0].filepath;
+            }
           }
 
-          // Warn if using local path that might not be accessible externally
-          if (lastImageUrl.startsWith('/') && !lastImageUrl.startsWith('http')) {
-            logger.warn(
-              `[MCP][${serverName}][${toolName}] Image URL is a local path that may not be accessible to Replicate API. Consider using cloud storage (S3, Firebase, Azure) for intranet deployments: ${lastImageUrl}`,
+          // For input images (for Replicate to access), always upload to S3
+          // This ensures Replicate can access the image even if main fileStrategy is 'local'
+          // Use the original local filepath if available, otherwise try the URL
+          const filePathToUpload = localFilePath || lastImageUrl;
+          if (!filePathToUpload) {
+            throw new Error(
+              `[MCP][${serverName}][${toolName}] No file path available for S3 upload. Cannot proceed with image editing.`,
+            );
+          }
+
+          let s3Url;
+          try {
+            s3Url = await uploadToS3ForExternalAccess(filePathToUpload, userId);
+            if (!s3Url || typeof s3Url !== 'string' || s3Url.trim() === '') {
+              throw new Error('S3 upload returned empty or invalid URL');
+            }
+            logger.info(
+              `[MCP][${serverName}][${toolName}] Uploaded input image to S3 for Replicate access: ${filePathToUpload} -> ${s3Url}`,
+            );
+            lastImageUrl = s3Url;
+          } catch (error) {
+            const errorMessage = error?.message || 'Unknown error';
+            logger.error(
+              `[MCP][${serverName}][${toolName}] Failed to upload input image to S3: ${errorMessage}`,
+              error,
+            );
+            // Re-throw with a clear error message that will stop the tool call
+            throw new Error(
+              `Cannot edit image: S3 upload failed. ${errorMessage}. Please ensure S3 is properly configured with valid credentials and bucket access for Replicate API access. The tool call has been aborted.`,
             );
           }
 
