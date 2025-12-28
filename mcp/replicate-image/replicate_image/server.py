@@ -91,7 +91,7 @@ async def generate_image(
             model,
             input={
                 "prompt": prompt,
-                "aspect_ratio": "3:2",
+                "aspect_ratio": "4:3",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }
@@ -117,20 +117,28 @@ async def edit_image(
     """
     Edit or transform an existing image using a text prompt.
     
+    IMPORTANT: The image_url parameter is OPTIONAL. If not provided, the system will automatically
+    extract the most recent image from the conversation context. You can call this tool with just
+    the prompt parameter, and it will automatically use the last image in the conversation.
+    
     The image can be provided in three ways:
-    1. Explicitly via the image_url parameter (preferred)
-    2. Automatically extracted from conversation_context (last image URL found)
-    3. From environment variable CONVERSATION_IMAGES (comma-separated URLs, uses last one)
+    1. Automatically extracted from conversation (default - you don't need to provide image_url)
+    2. Explicitly via the image_url parameter (if you want to use a specific image)
+    3. From environment variable CONVERSATION_IMAGES (fallback)
     
     Args:
-        prompt: Instructions for how to edit or transform the image.
-        image_url: Optional URL of the image to edit. If not provided, will try to find from context.
-        conversation_context: Optional conversation text to search for image URLs.
-        num_outputs: Number of variations to generate (1-4).
+        prompt: Instructions for how to edit or transform the image (REQUIRED).
+        image_url: Optional URL of the image to edit. If omitted, the last image from the conversation will be used automatically.
+        conversation_context: Optional conversation text to search for image URLs (usually auto-populated).
+        num_outputs: Number of variations to generate (1-4, default: 1).
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
     
     Returns:
-        List of image URLs. Returns empty list if no image is provided.
+        List of image URLs. Returns empty list if no image is found.
+    
+    Example usage:
+        - edit_image(prompt="Make the background blue")  # Uses last image automatically
+        - edit_image(prompt="Add a giraffe", image_url="https://...")  # Uses specific image
     """
     # Determine which image URL to use
     final_image_url = image_url

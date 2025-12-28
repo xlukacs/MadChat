@@ -28,9 +28,15 @@ const {
   getMCPManager,
 } = require('~/config');
 const { findToken, createToken, updateToken } = require('~/models');
+const { getMessages } = require('~/models/Message');
+const { findFileById } = require('~/models/File');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
+const axios = require('axios');
 
 const IMAGE_URL_PATTERN = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)/gi;
 const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/gi;
@@ -85,92 +91,200 @@ const extractImageUrls = (value, acc = []) => {
 };
 
 /**
- * Extract image URLs from conversation messages in requestBody
+ * Upload local file to UploadThing and get public URL
+ * Requires UPLOADTHING_SECRET environment variable
  */
-const extractImageUrlsFromConversation = (requestBody) => {
-  if (!requestBody) {
+const uploadToUploadThing = async (localFilePath, appConfig) => {
+  const uploadThingSecret = process.env.UPLOADTHING_SECRET;
+  if (!uploadThingSecret) {
+    logger.warn('[MCP] UPLOADTHING_SECRET not set, skipping UploadThing upload');
+    return null;
+  }
+
+  try {
+    // Resolve the full file path
+    let fullPath;
+    if (localFilePath.startsWith('/images/')) {
+      const basePath = localFilePath.split('/images/')[1];
+      fullPath = path.join(appConfig.paths.imageOutput, basePath);
+    } else if (localFilePath.startsWith('/uploads/')) {
+      const basePath = localFilePath.split('/uploads/')[1];
+      fullPath = path.join(appConfig.paths.uploads, basePath);
+    } else {
+      fullPath = localFilePath;
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(fullPath)) {
+      logger.warn(`[MCP] File not found: ${fullPath}`);
+      return null;
+    }
+
+    // Read file
+    const fileBuffer = fs.readFileSync(fullPath);
+    const fileName = path.basename(fullPath);
+
+    // UploadThing REST API endpoint
+    // Note: This uses UploadThing's REST API. You may need to adjust the endpoint
+    // based on your UploadThing setup. Alternatively, you can use the @uploadthing/server package.
+    const uploadUrl = process.env.UPLOADTHING_URL || 'https://uploadthing.com/api/uploadFiles';
+
+    // Create form data
+    const formData = new FormData();
+    formData.append('files', fileBuffer, {
+      filename: fileName,
+      contentType: 'application/octet-stream',
+    });
+
+    // Make upload request
+    // UploadThing typically uses 'X-Uploadthing-Secret' or 'Authorization' header
+    const response = await axios.post(uploadUrl, formData, {
+      headers: {
+        ...formData.getHeaders(),
+        'X-Uploadthing-Secret': uploadThingSecret,
+        // Alternative: 'Authorization': `Bearer ${uploadThingSecret}`,
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+
+    // Handle different response formats
+    let uploadedUrl = null;
+    if (response.data) {
+      // Array format: [{ url: '...' }]
+      if (Array.isArray(response.data) && response.data[0]?.url) {
+        uploadedUrl = response.data[0].url;
+      }
+      // Object format: { url: '...' } or { data: [{ url: '...' }] }
+      else if (response.data.url) {
+        uploadedUrl = response.data.url;
+      } else if (response.data.data?.[0]?.url) {
+        uploadedUrl = response.data.data[0].url;
+      }
+    }
+
+    if (uploadedUrl) {
+      logger.info(`[MCP] Successfully uploaded to UploadThing: ${fileName} -> ${uploadedUrl}`);
+      return uploadedUrl;
+    }
+
+    logger.error('[MCP] UploadThing response missing URL:', response.data);
+    return null;
+  } catch (error) {
+    logger.error(`[MCP] Error uploading to UploadThing: ${error.message}`, error);
+    return null;
+  }
+};
+
+/**
+ * Convert local file path to public URL
+ * For local storage, tries UploadThing first (if configured), then constructs full URL using DOMAIN_SERVER
+ * For cloud storage, the path should already be a full URL
+ */
+const convertToPublicURL = async (filePath, appConfig = null) => {
+  if (!filePath) {
+    return null;
+  }
+
+  // If it's already a full URL (http/https), return as is
+  if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+    return filePath;
+  }
+
+  // If it's a local path (starts with /images/ or /uploads/), try to get public URL
+  if (filePath.startsWith('/images/') || filePath.startsWith('/uploads/')) {
+    // Try UploadThing first if configured
+    if (process.env.UPLOADTHING_SECRET && appConfig) {
+      const uploadThingUrl = await uploadToUploadThing(filePath, appConfig);
+      if (uploadThingUrl) {
+        return uploadThingUrl;
+      }
+      // Fall through to DOMAIN_SERVER if UploadThing fails
+    }
+
+    // Fallback to DOMAIN_SERVER
+    const domainServer = process.env.DOMAIN_SERVER;
+    if (domainServer) {
+      // Remove trailing slash from domain if present
+      const baseUrl = domainServer.endsWith('/') ? domainServer.slice(0, -1) : domainServer;
+      return `${baseUrl}${filePath}`;
+    } else {
+      logger.warn(
+        `[MCP] Local file path found but DOMAIN_SERVER not set. File may not be accessible to external services: ${filePath}`,
+      );
+      // Return the path as-is, but it likely won't work for external services
+      return filePath;
+    }
+  }
+
+  // Return as-is for other cases
+  return filePath;
+};
+
+/**
+ * Extract the most recent image URL from conversation
+ * Queries the conversation directly, finds the last message with attachments,
+ * uploads to UploadThing if needed, and returns the public URL
+ */
+const extractImageUrlsFromConversation = async (conversationId) => {
+  if (!conversationId) {
     return [];
   }
 
-  const imageUrls = [];
-
-  // Extract from messages array if present
-  if (requestBody.messages && Array.isArray(requestBody.messages)) {
-    for (const message of requestBody.messages) {
-      // Check content array for image URLs
-      if (message.content && Array.isArray(message.content)) {
-        for (const content of message.content) {
-          // Check for image_url type
-          if (content.type === 'image_url' && content.image_url?.url) {
-            const url = content.image_url.url;
-            if (isImageUrlString(url) && !imageUrls.includes(url)) {
-              imageUrls.push(url);
-            }
-          }
-          // Check for image_file type (file_id references)
-          if (content.type === 'image_file' && content.image_file?.file_id) {
-            // Note: file_id references would need to be resolved to URLs
-            // For now, we'll skip these as they need additional processing
-          }
-          // Extract URLs from text content
-          if (content.text || content.type === 'text') {
-            const text = content.text || content[content.type] || '';
-            const urls = extractImageUrls(text, []);
-            urls.forEach((url) => {
-              if (!imageUrls.includes(url)) {
-                imageUrls.push(url);
-              }
-            });
-          }
-        }
-      }
-      // Check for attachments
-      if (message.attachments && Array.isArray(message.attachments)) {
-        for (const attachment of message.attachments) {
-          if (attachment.url && isImageUrlString(attachment.url)) {
-            if (!imageUrls.includes(attachment.url)) {
-              imageUrls.push(attachment.url);
-            }
-          }
-        }
-      }
-      // Extract from any text field in the message
-      if (message.text) {
-        const urls = extractImageUrls(message.text, []);
-        urls.forEach((url) => {
-          if (!imageUrls.includes(url)) {
-            imageUrls.push(url);
-          }
-        });
-      }
+  try {
+    // Query messages from the conversation, sorted by creation date (newest first)
+    const messages = await getMessages({ conversationId: conversationId });
+    if (!messages || messages.length === 0) {
+      logger.warn(`[MCP] No messages found for conversationId: ${conversationId}`);
+      return [];
     }
+
+    // Get messageIds to query File collection for attachments
+    const messageIds = messages.map((msg) => msg.messageId);
+
+    // Query File collection for image attachments
+    const { getFiles } = require('~/models/File');
+    const fileAttachments = await getFiles(
+      { messageId: { $in: messageIds }, type: { $regex: /^image\//i } },
+      { updatedAt: -1 }, // Sort by most recent first
+      {},
+    );
+
+    logger.info(
+      `[MCP] Found ${fileAttachments.length} image attachments in File collection for conversation ${conversationId}`,
+    );
+
+    if (fileAttachments.length === 0) {
+      return [];
+    }
+
+    // Get the most recent image attachment
+    const latestAttachment = fileAttachments[0];
+
+    // Check if it has a filepath
+    if (!latestAttachment.filepath) {
+      logger.warn(`[MCP] Latest attachment ${latestAttachment.file_id} has no filepath`);
+      return [];
+    }
+
+    // Get app config for UploadThing
+    const appConfig = await getAppConfig();
+
+    // Convert to public URL (uploads to UploadThing if needed)
+    const publicUrl = await convertToPublicURL(latestAttachment.filepath, appConfig);
+
+    if (publicUrl) {
+      logger.info(
+        `[MCP] Extracted image URL from conversation: ${publicUrl} (from filepath: ${latestAttachment.filepath})`,
+      );
+      return [publicUrl];
+    }
+
+    return [];
+  } catch (error) {
+    logger.error(`[MCP] Error extracting image from conversation ${conversationId}:`, error);
+    return [];
   }
-
-  // Also check for files array
-  if (requestBody.files && Array.isArray(requestBody.files)) {
-    for (const file of requestBody.files) {
-      if (file.url && isImageUrlString(file.url)) {
-        if (!imageUrls.includes(file.url)) {
-          imageUrls.push(file.url);
-        }
-      }
-      if (file.filepath && isImageUrlString(file.filepath)) {
-        if (!imageUrls.includes(file.filepath)) {
-          imageUrls.push(file.filepath);
-        }
-      }
-    }
-  }
-
-  // Extract from any other fields recursively
-  const allUrls = extractImageUrls(requestBody, []);
-  allUrls.forEach((url) => {
-    if (!imageUrls.includes(url)) {
-      imageUrls.push(url);
-    }
-  });
-
-  return imageUrls;
 };
 
 /**
@@ -599,30 +713,87 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
-      // For replicate-image edit_image tool, extract image URLs from conversation if image_url not provided
+      // For replicate-image/image-gen edit_image tool, always extract image URLs from conversation
+      // This ensures we automatically use the most recent image from the conversation
       let finalToolArguments = toolArguments;
-      if (serverName === 'replicate-image' && toolName === 'edit_image') {
+      if (
+        (serverName === 'replicate-image' || serverName === 'image-gen') &&
+        toolName === 'edit_image'
+      ) {
         logger.info(`[MCP][${serverName}][${toolName}] Extracting image URLs from conversation`);
         const args = typeof toolArguments === 'string' ? JSON.parse(toolArguments) : toolArguments;
 
-        // If image_url is not provided, try to extract from conversation
-        if (!args?.image_url) {
-          const requestBody = config?.configurable?.requestBody;
-          const conversationImages = extractImageUrlsFromConversation(requestBody);
+        // Always try to extract from conversation to ensure we use the most recent image
+        // This allows the AI to call the tool without providing image_url
+        const requestBody = config?.configurable?.requestBody;
+        const conversationId = requestBody?.conversationId;
 
+        let conversationImages = [];
+
+        // Query conversation directly for the most recent image
+        if (conversationId) {
+          logger.info(
+            `[MCP][${serverName}][${toolName}] Extracting image from conversation: ${conversationId}`,
+          );
+          conversationImages = await extractImageUrlsFromConversation(conversationId);
+          logger.info(
+            `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} images from conversation`,
+          );
+        }
+
+        // If image_url is not provided, use the extracted image
+        if (!args?.image_url) {
           if (conversationImages.length > 0) {
             // Use the last (most recent) image URL
-            const lastImageUrl = conversationImages[conversationImages.length - 1];
+            let lastImageUrl = conversationImages[conversationImages.length - 1];
+
+            // Convert local file paths to public URLs
+            // Get app config for file path resolution
+            const appConfig = await getAppConfig({ userId });
+            const publicUrl = await convertToPublicURL(lastImageUrl, appConfig);
+            if (publicUrl !== lastImageUrl) {
+              logger.info(
+                `[MCP][${serverName}][${toolName}] Converted local path to public URL: ${lastImageUrl} -> ${publicUrl}`,
+              );
+              lastImageUrl = publicUrl;
+            }
+
+            // Warn if using local path that might not be accessible externally
+            if (lastImageUrl.startsWith('/') && !lastImageUrl.startsWith('http')) {
+              logger.warn(
+                `[MCP][${serverName}][${toolName}] Image URL is a local path that may not be accessible to Replicate API. Consider using cloud storage (S3, Firebase, Azure) or UploadThing for intranet deployments: ${lastImageUrl}`,
+              );
+            }
+
             // Pass the image URL directly and also include conversation context for fallback
+            // conversation_context should be a string, not JSON
             finalToolArguments = {
               ...args,
               image_url: lastImageUrl,
-              conversation_context: JSON.stringify(conversationImages.join(' ')),
+              conversation_context: conversationImages.join(' '),
             };
             logger.info(
-              `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
+              `[MCP][${serverName}][${toolName}] Auto-extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
             );
+          } else {
+            logger.warn(
+              `[MCP][${serverName}][${toolName}] No image URLs found in conversation and image_url not provided. Tool may fail.`,
+            );
+            // Still pass conversation_context as empty string (not array) even if no images found
+            finalToolArguments = {
+              ...args,
+              conversation_context: '',
+            };
           }
+        } else {
+          // image_url was provided, but still include conversation_context as fallback
+          logger.info(
+            `[MCP][${serverName}][${toolName}] image_url provided by user: ${args.image_url}. Also found ${conversationImages.length} images in conversation for context.`,
+          );
+          finalToolArguments = {
+            ...args,
+            conversation_context: conversationImages.length > 0 ? conversationImages.join(' ') : '',
+          };
         }
       }
 
