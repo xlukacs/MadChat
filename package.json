@@ -184,5 +184,8 @@
       "admin/",
       "packages/"
     ]
+  },
+  "dependencies": {
+    "uploadthing": "^7.7.4"
   }
 }
