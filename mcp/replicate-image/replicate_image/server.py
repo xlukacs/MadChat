@@ -12,9 +12,10 @@ logger = logging.getLogger("replicate-image-mcp")
 # Initialize FastMCP server
 mcp = FastMCP("Replicate Image Server")
 
-# Model identifier for gpt-image-1.5
-# Note: Ensure this matches the exact identifier on Replicate
-DEFAULT_MODEL = "openai/gpt-image-1.5"
+# Model identifiers
+# Note: Ensure these match the exact identifiers on Replicate
+DEFAULT_GENERATION_MODEL = "google/imagen-4-fast"  # For image generation
+DEFAULT_EDIT_MODEL = "openai/gpt-image-1.5"  # For image editing
 
 # Pattern to match image URLs
 IMAGE_URL_PATTERN = re.compile(
@@ -71,7 +72,7 @@ def find_image_from_context(context: Optional[str] = None) -> Optional[str]:
 async def generate_image(
     prompt: str, 
     num_outputs: int = 1,
-    model: str = DEFAULT_MODEL
+    model: str = DEFAULT_GENERATION_MODEL
 ) -> List[str]:
     """
     Generate images from a text prompt using a Replicate model.
@@ -79,7 +80,7 @@ async def generate_image(
     Args:
         prompt: Text description of the image to generate.
         num_outputs: Number of images to generate (1-4).
-        model: Replicate model identifier (defaults to openai/gpt-image-1.5).
+        model: Replicate model identifier (defaults to google/imagen-4-fast).
     """
     logger.info(f"Generating image with model {model} and prompt: {prompt}")
     
@@ -90,7 +91,7 @@ async def generate_image(
             model,
             input={
                 "prompt": prompt,
-                "aspect_ratio": "3:2",
+                "aspect_ratio": "4:3",
                 "num_outputs": num_outputs,
                 "quality": "low"
             }
@@ -111,22 +112,33 @@ async def edit_image(
     image_url: Optional[str] = None,
     conversation_context: Optional[str] = None,
     num_outputs: int = 1,
-    model: str = DEFAULT_MODEL
+    model: str = DEFAULT_EDIT_MODEL
 ) -> List[str]:
     """
     Edit or transform an existing image using a text prompt.
     
+    IMPORTANT: The image_url parameter is OPTIONAL. If not provided, the system will automatically
+    extract the most recent image from the conversation context. You can call this tool with just
+    the prompt parameter, and it will automatically use the last image in the conversation.
+    
     The image can be provided in three ways:
-    1. Explicitly via the image_url parameter
-    2. Automatically extracted from conversation_context (last image URL found)
-    3. From environment variable CONVERSATION_IMAGES (comma-separated URLs, uses last one)
+    1. Automatically extracted from conversation (default - you don't need to provide image_url)
+    2. Explicitly via the image_url parameter (if you want to use a specific image)
+    3. From environment variable CONVERSATION_IMAGES (fallback)
     
     Args:
-        prompt: Instructions for how to edit or transform the image.
-        image_url: Optional URL of the image to edit. If not provided, will try to find from context.
-        conversation_context: Optional conversation text to search for image URLs.
-        num_outputs: Number of variations to generate (1-4).
+        prompt: Instructions for how to edit or transform the image (REQUIRED).
+        image_url: Optional URL of the image to edit. If omitted, the last image from the conversation will be used automatically.
+        conversation_context: Optional conversation text to search for image URLs (usually auto-populated).
+        num_outputs: Number of variations to generate (1-4, default: 1).
         model: Replicate model identifier (defaults to openai/gpt-image-1.5).
+    
+    Returns:
+        List of image URLs. Returns empty list if no image is found.
+    
+    Example usage:
+        - edit_image(prompt="Make the background blue")  # Uses last image automatically
+        - edit_image(prompt="Add a giraffe", image_url="https://...")  # Uses specific image
     """
     # Determine which image URL to use
     final_image_url = image_url
@@ -147,12 +159,14 @@ async def edit_image(
                     final_image_url = urls[-1]  # Use last image
                     logger.info(f"Found image URL from environment: {final_image_url}")
     
+    # If no image is provided, return early without executing the edit
     if not final_image_url:
-        raise ValueError(
-            "No image URL provided. Please provide image_url parameter, "
-            "or ensure conversation_context contains an image URL, "
-            "or set CONVERSATION_IMAGES environment variable."
+        logger.warning(
+            "edit_image called but no image URL provided. "
+            "Please provide image_url parameter, or ensure conversation_context contains an image URL, "
+            "or set CONVERSATION_IMAGES environment variable. Skipping edit operation."
         )
+        return []
     
     logger.info(f"Editing image {final_image_url} with model {model} and prompt: {prompt}")
     
@@ -160,11 +174,13 @@ async def edit_image(
         output = replicate.run(
             model,
             input={
-                "image": final_image_url,
+                "input_images": [final_image_url],
                 "prompt": prompt,
                 "aspect_ratio": "3:2",
                 "num_outputs": num_outputs,
-                "quality": "low"
+                "quality": "low",
+                "moderation": "low",
+                "input_fidelity": "high",
             }
         )
         

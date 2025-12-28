@@ -28,9 +28,12 @@ const {
   getMCPManager,
 } = require('~/config');
 const { findToken, createToken, updateToken } = require('~/models');
+const { getMessages } = require('~/models/Message');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
+const fs = require('fs');
+const path = require('path');
 
 const IMAGE_URL_PATTERN = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)/gi;
 const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/gi;
@@ -85,92 +88,323 @@ const extractImageUrls = (value, acc = []) => {
 };
 
 /**
- * Extract image URLs from conversation messages in requestBody
+ * Upload local file to S3 and get public URL
+ * Uses the configured file storage strategy (S3, Azure, Firebase, or Local)
  */
-const extractImageUrlsFromConversation = (requestBody) => {
-  if (!requestBody) {
+const uploadToCloudStorage = async (localFilePath, appConfig, userId) => {
+  if (!appConfig) {
+    logger.warn('[MCP] App config not provided, cannot upload to cloud storage');
+    return null;
+  }
+
+  try {
+    // Resolve the full file path
+    let fullPath;
+    if (localFilePath.startsWith('/images/')) {
+      const basePath = localFilePath.split('/images/')[1];
+      fullPath = path.join(appConfig.paths.imageOutput, basePath);
+    } else if (localFilePath.startsWith('/uploads/')) {
+      const basePath = localFilePath.split('/uploads/')[1];
+      fullPath = path.join(appConfig.paths.uploads, basePath);
+    } else {
+      fullPath = localFilePath;
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(fullPath)) {
+      logger.warn(`[MCP] File not found: ${fullPath}`);
+      return null;
+    }
+
+    // Read file
+    const fileBuffer = fs.readFileSync(fullPath);
+    const fileName = path.basename(fullPath);
+
+    logger.info(
+      `[MCP] Uploading to cloud storage: ${fileName} (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
+    );
+
+    // Get the storage strategy functions
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const strategyFunctions = getStrategyFunctions(appConfig.fileStrategy);
+
+    if (!strategyFunctions?.saveBuffer) {
+      logger.warn(
+        `[MCP] Storage strategy "${appConfig.fileStrategy}" does not support saveBuffer. Cannot upload file.`,
+      );
+      return null;
+    }
+
+    // Determine base path based on file location
+    const basePath = localFilePath.startsWith('/images/') ? 'images' : 'uploads';
+
+    // Upload using the storage strategy
+    const publicUrl = await strategyFunctions.saveBuffer({
+      userId: userId || 'system',
+      buffer: fileBuffer,
+      fileName: fileName,
+      basePath: basePath,
+    });
+
+    if (publicUrl) {
+      logger.info(
+        `[MCP] Successfully uploaded to ${appConfig.fileStrategy}: ${fileName} -> ${publicUrl}`,
+      );
+      return publicUrl;
+    }
+
+    logger.error(`[MCP] Upload to ${appConfig.fileStrategy} returned no URL`);
+    return null;
+  } catch (error) {
+    logger.error(`[MCP] Error uploading to cloud storage: ${error.message}`, error);
+    return null;
+  }
+};
+
+/**
+ * Upload local file to S3 specifically for external access (e.g., Replicate API)
+ * This forces S3 upload even if the main fileStrategy is 'local'
+ * Throws an error if S3 is not available - no fallbacks to DOMAIN_SERVER
+ */
+const uploadToS3ForExternalAccess = async (localFilePath, userId) => {
+  if (!localFilePath) {
+    throw new Error('No file path provided for S3 upload');
+  }
+
+  // If it's already an S3 URL, return as is
+  if (
+    localFilePath.includes('amazonaws.com') ||
+    localFilePath.includes('s3.') ||
+    localFilePath.includes('s3-')
+  ) {
+    logger.info(`[MCP] File is already an S3 URL: ${localFilePath}`);
+    return localFilePath;
+  }
+
+  // If it's a DOMAIN_SERVER URL, extract the local path and upload to S3
+  let actualLocalPath = localFilePath;
+  if (localFilePath.startsWith('http://') || localFilePath.startsWith('https://')) {
+    // Try to extract local path from DOMAIN_SERVER URL
+    const domainServer = process.env.DOMAIN_SERVER;
+    if (domainServer) {
+      const baseUrl = domainServer.endsWith('/') ? domainServer.slice(0, -1) : domainServer;
+      if (localFilePath.startsWith(baseUrl)) {
+        actualLocalPath = localFilePath.replace(baseUrl, '');
+        logger.info(`[MCP] Extracted local path from DOMAIN_SERVER URL: ${actualLocalPath}`);
+      } else {
+        // It's already a public URL (not DOMAIN_SERVER), check if it's S3
+        if (!localFilePath.includes('amazonaws.com') && !localFilePath.includes('s3.')) {
+          throw new Error(
+            `File is already a public URL but not S3. Cannot use non-S3 URLs for Replicate access: ${localFilePath}. Please ensure S3 is configured.`,
+          );
+        }
+        return localFilePath;
+      }
+    } else {
+      throw new Error(
+        `File is already a public URL but S3 is required for Replicate access: ${localFilePath}. Please ensure S3 is configured.`,
+      );
+    }
+  }
+
+  // Only process local paths
+  if (!actualLocalPath.startsWith('/images/') && !actualLocalPath.startsWith('/uploads/')) {
+    throw new Error(
+      `Invalid file path format. Expected local path (/images/... or /uploads/...) but got: ${actualLocalPath}`,
+    );
+  }
+
+  try {
+    const appConfig = await getAppConfig({ userId });
+
+    // Check if S3 is available (even if not the main fileStrategy)
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const { FileSources } = require('librechat-data-provider');
+
+    // Try S3 - this is required, no fallbacks
+    let s3Functions;
+    try {
+      s3Functions = getStrategyFunctions(FileSources.s3);
+    } catch (_e) {
+      throw new Error(
+        'S3 strategy is not available. S3 is required for uploading input images for Replicate API access. Please configure S3 in your environment.',
+      );
+    }
+
+    if (!s3Functions?.saveBuffer) {
+      throw new Error(
+        'S3 saveBuffer function is not available. S3 is required for uploading input images for Replicate API access. Please configure S3 in your environment.',
+      );
+    }
+
+    // Read the file
+    let fullPath;
+    if (actualLocalPath.startsWith('/images/')) {
+      const basePath = actualLocalPath.split('/images/')[1];
+      fullPath = path.join(appConfig.paths.imageOutput, basePath);
+    } else if (actualLocalPath.startsWith('/uploads/')) {
+      const basePath = actualLocalPath.split('/uploads/')[1];
+      fullPath = path.join(appConfig.paths.uploads, basePath);
+    } else {
+      fullPath = actualLocalPath;
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      throw new Error(`File not found for S3 upload: ${fullPath}`);
+    }
+
+    const fileBuffer = fs.readFileSync(fullPath);
+    const fileName = path.basename(fullPath);
+    const basePath = actualLocalPath.startsWith('/images/') ? 'images' : 'uploads';
+
+    logger.info(
+      `[MCP] Uploading to S3 for external access: ${fileName} (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
+    );
+
+    let s3Url;
+    try {
+      s3Url = await s3Functions.saveBuffer({
+        userId: userId || 'system',
+        buffer: fileBuffer,
+        fileName: fileName,
+        basePath: basePath,
+      });
+    } catch (saveError) {
+      throw new Error(
+        `S3 upload failed for file ${fileName}: ${saveError.message}. Please ensure S3 credentials are correct and the bucket is accessible.`,
+      );
+    }
+
+    if (!s3Url || typeof s3Url !== 'string' || s3Url.trim() === '') {
+      throw new Error(
+        `S3 upload completed but no valid URL returned for file: ${fileName}. Please check S3 configuration.`,
+      );
+    }
+
+    logger.info(`[MCP] Successfully uploaded to S3: ${fileName} -> ${s3Url}`);
+    return s3Url;
+  } catch (error) {
+    logger.error(`[MCP] Error uploading to S3 for external access: ${error.message}`, error);
+    throw error; // Re-throw instead of returning null
+  }
+};
+
+/**
+ * Convert local file path to public URL
+ * For local storage, uploads to cloud storage (S3/Azure/Firebase) if configured, otherwise uses DOMAIN_SERVER
+ * For cloud storage, the path should already be a full URL
+ */
+const convertToPublicURL = async (filePath, appConfig = null, userId = null) => {
+  if (!filePath) {
+    return null;
+  }
+
+  // If it's already a full URL (http/https), return as is
+  if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+    return filePath;
+  }
+
+  // If it's a local path (starts with /images/ or /uploads/), try to get public URL
+  if (filePath.startsWith('/images/') || filePath.startsWith('/uploads/')) {
+    // If cloud storage is configured (S3, Azure, Firebase), upload the file
+    if (appConfig && appConfig.fileStrategy && appConfig.fileStrategy !== 'local') {
+      const cloudUrl = await uploadToCloudStorage(filePath, appConfig, userId);
+      if (cloudUrl) {
+        return cloudUrl;
+      }
+      // If cloud upload fails, fall through to DOMAIN_SERVER
+      logger.warn(
+        `[MCP] Failed to upload to ${appConfig.fileStrategy}, falling back to DOMAIN_SERVER: ${filePath}`,
+      );
+    }
+
+    // Fallback to DOMAIN_SERVER (for local storage or if cloud upload failed)
+    const domainServer = process.env.DOMAIN_SERVER;
+    if (domainServer) {
+      // Remove trailing slash from domain if present
+      const baseUrl = domainServer.endsWith('/') ? domainServer.slice(0, -1) : domainServer;
+      logger.warn(
+        `[MCP] Using DOMAIN_SERVER for file URL. This may not be accessible to external services if on intranet: ${filePath}`,
+      );
+      return `${baseUrl}${filePath}`;
+    } else {
+      throw new Error(
+        `Local file path found but no cloud storage configured and DOMAIN_SERVER not set. File cannot be accessed by external services: ${filePath}`,
+      );
+    }
+  }
+
+  // Return as-is for other cases
+  return filePath;
+};
+
+/**
+ * Extract the most recent image URL from conversation
+ * Queries the conversation directly, finds the last message with attachments,
+ * uploads to S3/Azure/Firebase if configured, and returns the public URL
+ */
+const extractImageUrlsFromConversation = async (conversationId) => {
+  if (!conversationId) {
     return [];
   }
 
-  const imageUrls = [];
-
-  // Extract from messages array if present
-  if (requestBody.messages && Array.isArray(requestBody.messages)) {
-    for (const message of requestBody.messages) {
-      // Check content array for image URLs
-      if (message.content && Array.isArray(message.content)) {
-        for (const content of message.content) {
-          // Check for image_url type
-          if (content.type === 'image_url' && content.image_url?.url) {
-            const url = content.image_url.url;
-            if (isImageUrlString(url) && !imageUrls.includes(url)) {
-              imageUrls.push(url);
-            }
-          }
-          // Check for image_file type (file_id references)
-          if (content.type === 'image_file' && content.image_file?.file_id) {
-            // Note: file_id references would need to be resolved to URLs
-            // For now, we'll skip these as they need additional processing
-          }
-          // Extract URLs from text content
-          if (content.text || content.type === 'text') {
-            const text = content.text || content[content.type] || '';
-            const urls = extractImageUrls(text, []);
-            urls.forEach((url) => {
-              if (!imageUrls.includes(url)) {
-                imageUrls.push(url);
-              }
-            });
-          }
-        }
-      }
-      // Check for attachments
-      if (message.attachments && Array.isArray(message.attachments)) {
-        for (const attachment of message.attachments) {
-          if (attachment.url && isImageUrlString(attachment.url)) {
-            if (!imageUrls.includes(attachment.url)) {
-              imageUrls.push(attachment.url);
-            }
-          }
-        }
-      }
-      // Extract from any text field in the message
-      if (message.text) {
-        const urls = extractImageUrls(message.text, []);
-        urls.forEach((url) => {
-          if (!imageUrls.includes(url)) {
-            imageUrls.push(url);
-          }
-        });
-      }
+  try {
+    // Query messages from the conversation, sorted by creation date (newest first)
+    const messages = await getMessages({ conversationId: conversationId });
+    if (!messages || messages.length === 0) {
+      logger.warn(`[MCP] No messages found for conversationId: ${conversationId}`);
+      return [];
     }
+
+    // Get messageIds to query File collection for attachments
+    const messageIds = messages.map((msg) => msg.messageId);
+
+    // Query File collection for image attachments
+    const { getFiles } = require('~/models/File');
+    const fileAttachments = await getFiles(
+      { messageId: { $in: messageIds }, type: { $regex: /^image\//i } },
+      { updatedAt: -1 }, // Sort by most recent first
+      {},
+    );
+
+    logger.info(
+      `[MCP] Found ${fileAttachments.length} image attachments in File collection for conversation ${conversationId}`,
+    );
+
+    if (fileAttachments.length === 0) {
+      return [];
+    }
+
+    // Get the most recent image attachment
+    const latestAttachment = fileAttachments[0];
+
+    // Check if it has a filepath
+    if (!latestAttachment.filepath) {
+      logger.warn(`[MCP] Latest attachment ${latestAttachment.file_id} has no filepath`);
+      return [];
+    }
+
+    // Get app config for cloud storage upload
+    const appConfig = await getAppConfig();
+
+    // Extract userId from file attachment if available (for S3 path)
+    const userId = latestAttachment.user || null;
+
+    // Convert to public URL (uploads to S3/Azure/Firebase if configured)
+    const publicUrl = await convertToPublicURL(latestAttachment.filepath, appConfig, userId);
+
+    if (publicUrl) {
+      logger.info(
+        `[MCP] Extracted image URL from conversation: ${publicUrl} (from filepath: ${latestAttachment.filepath})`,
+      );
+      return [publicUrl];
+    }
+
+    return [];
+  } catch (error) {
+    logger.error(`[MCP] Error extracting image from conversation ${conversationId}:`, error);
+    return [];
   }
-
-  // Also check for files array
-  if (requestBody.files && Array.isArray(requestBody.files)) {
-    for (const file of requestBody.files) {
-      if (file.url && isImageUrlString(file.url)) {
-        if (!imageUrls.includes(file.url)) {
-          imageUrls.push(file.url);
-        }
-      }
-      if (file.filepath && isImageUrlString(file.filepath)) {
-        if (!imageUrls.includes(file.filepath)) {
-          imageUrls.push(file.filepath);
-        }
-      }
-    }
-  }
-
-  // Extract from any other fields recursively
-  const allUrls = extractImageUrls(requestBody, []);
-  allUrls.forEach((url) => {
-    if (!imageUrls.includes(url)) {
-      imageUrls.push(url);
-    }
-  });
-
-  return imageUrls;
 };
 
 /**
@@ -599,26 +833,119 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
-      // For replicate-image edit_image tool, extract image URLs from conversation if image_url not provided
+      // For replicate-image/image-gen edit_image tool, always extract image URLs from conversation
+      // This ensures we automatically use the most recent image from the conversation
       let finalToolArguments = toolArguments;
-      if (serverName === 'replicate-image' && toolName === 'edit_image') {
+      if (
+        (serverName === 'replicate-image' || serverName === 'image-gen') &&
+        toolName === 'edit_image'
+      ) {
+        logger.info(`[MCP][${serverName}][${toolName}] Extracting image URLs from conversation`);
         const args = typeof toolArguments === 'string' ? JSON.parse(toolArguments) : toolArguments;
 
-        // If image_url is not provided, try to extract from conversation
-        if (!args?.image_url) {
-          const requestBody = config?.configurable?.requestBody;
-          const conversationImages = extractImageUrlsFromConversation(requestBody);
+        // Always try to extract from conversation to ensure we use the most recent image
+        // This allows the AI to call the tool without providing image_url
+        const requestBody = config?.configurable?.requestBody;
+        const conversationId = requestBody?.conversationId;
 
-          if (conversationImages.length > 0) {
-            // Add conversation context to tool arguments
-            finalToolArguments = {
-              ...args,
-              conversation_context: JSON.stringify(conversationImages.join(' ')),
-            };
-            logger.info(
-              `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} image URLs from conversation`,
+        let conversationImages = [];
+
+        // Query conversation directly for the most recent image
+        if (conversationId) {
+          logger.info(
+            `[MCP][${serverName}][${toolName}] Extracting image from conversation: ${conversationId}`,
+          );
+          conversationImages = await extractImageUrlsFromConversation(conversationId);
+          logger.info(
+            `[MCP][${serverName}][${toolName}] Extracted ${conversationImages.length} images from conversation`,
+          );
+        }
+
+        // Always prioritize extracted images over user-provided image_url
+        // This prevents using hallucinated URLs from the user's input
+        if (conversationImages.length > 0) {
+          // Use the last (most recent) image URL from conversation
+          let lastImageUrl = conversationImages[conversationImages.length - 1];
+
+          // Get the original local filepath from the database (not the converted URL)
+          // We need to pass the local path to uploadToS3ForExternalAccess
+          const { getFiles } = require('~/models/File');
+          const requestBody = config?.configurable?.requestBody;
+          const conversationId = requestBody?.conversationId;
+
+          let localFilePath = null;
+          if (conversationId) {
+            const messages = await getMessages({ conversationId: conversationId });
+            const messageIds = messages.map((msg) => msg.messageId);
+            const fileAttachments = await getFiles(
+              { messageId: { $in: messageIds }, type: { $regex: /^image\//i } },
+              { updatedAt: -1 },
+              {},
+            );
+            if (fileAttachments.length > 0) {
+              localFilePath = fileAttachments[0].filepath;
+            }
+          }
+
+          // For input images (for Replicate to access), always upload to S3
+          // This ensures Replicate can access the image even if main fileStrategy is 'local'
+          // Use the original local filepath if available, otherwise try the URL
+          const filePathToUpload = localFilePath || lastImageUrl;
+          if (!filePathToUpload) {
+            throw new Error(
+              `[MCP][${serverName}][${toolName}] No file path available for S3 upload. Cannot proceed with image editing.`,
             );
           }
+
+          let s3Url;
+          try {
+            s3Url = await uploadToS3ForExternalAccess(filePathToUpload, userId);
+            if (!s3Url || typeof s3Url !== 'string' || s3Url.trim() === '') {
+              throw new Error('S3 upload returned empty or invalid URL');
+            }
+            logger.info(
+              `[MCP][${serverName}][${toolName}] Uploaded input image to S3 for Replicate access: ${filePathToUpload} -> ${s3Url}`,
+            );
+            lastImageUrl = s3Url;
+          } catch (error) {
+            const errorMessage = error?.message || 'Unknown error';
+            logger.error(
+              `[MCP][${serverName}][${toolName}] Failed to upload input image to S3: ${errorMessage}`,
+              error,
+            );
+            // Re-throw with a clear error message that will stop the tool call
+            throw new Error(
+              `Cannot edit image: S3 upload failed. ${errorMessage}. Please ensure S3 is properly configured with valid credentials and bucket access for Replicate API access. The tool call has been aborted.`,
+            );
+          }
+
+          finalToolArguments = {
+            ...args,
+            image_url: lastImageUrl,
+            conversation_context: conversationImages.join(' '),
+          };
+          logger.info(
+            `[MCP][${serverName}][${toolName}] Auto-extracted ${conversationImages.length} image URLs from conversation, using last image: ${lastImageUrl}`,
+          );
+        } else if (args?.image_url) {
+          // Only use user-provided image_url if no images found in conversation
+          // But warn that it might be a hallucination
+          logger.warn(
+            `[MCP][${serverName}][${toolName}] No images found in conversation, using user-provided image_url (may be incorrect): ${args.image_url}`,
+          );
+          finalToolArguments = {
+            ...args,
+            conversation_context: '',
+          };
+        } else {
+          logger.warn(
+            `[MCP][${serverName}][${toolName}] No image URLs found in conversation and image_url not provided. Tool may fail.`,
+          );
+          // Still pass conversation_context as empty string (not array) even if no images found
+          finalToolArguments = {
+            ...args,
+            conversation_context: '',
+          };
         }
       }
 

@@ -472,9 +472,15 @@ function createToolEndCallback({ req, res, artifactPromises }) {
                 const ext = path.extname(parsedUrl.pathname) || fallbackExt;
                 const fileName = `${baseFileName}${ext}`;
                 const fileStrategy = getFileStrategy(req.config, { isImage: true });
+                // Ensure userId is defined - use metadata.user_id as fallback
+                const userId = req.user?.id || metadata?.user_id;
+                if (!userId) {
+                  logger.error('[ToolEnd][image_url:http] No userId available, cannot process file');
+                  return null;
+                }
                 const file = await processFileURL({
                   URL: url,
-                  userId: req.user.id,
+                  userId,
                   fileName,
                   basePath: 'images',
                   context: FileContext.image_generation,
