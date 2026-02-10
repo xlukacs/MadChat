@@ -12,6 +12,7 @@ import store from '~/store';
 
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const file = attachment as TFile & TAttachmentMetadata;
   const user = useRecoilValue(store.user);
   const hasStoredFileId =
     typeof (attachment as any).file_id === 'string' && (attachment as any).file_id.length > 0;
@@ -23,6 +24,9 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   const { handleDownload: handleCodeOutputDownload } = useAttachmentLink({
     href: filepath,
     filename,
+    file_id: file.file_id,
+    user: file.user,
+    source: file.source,
   });
   const extension = attachment.filename?.split('.').pop();
 
