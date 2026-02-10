@@ -4,7 +4,16 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { DropdownPopup, Spinner, useToastContext } from '@librechat/client';
-import { Ellipsis, Share2, CopyPlus, Archive, Pen, Trash } from 'lucide-react';
+import {
+  Ellipsis,
+  Share2,
+  CopyPlus,
+  Archive,
+  Pen,
+  Trash,
+  FolderPlus,
+  FolderInput,
+} from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import {
@@ -18,6 +27,7 @@ import { NotificationSeverity } from '~/common';
 import { useChatContext } from '~/Providers';
 import DeleteButton from './DeleteButton';
 import ShareButton from './ShareButton';
+import { CreateFolderButton, MoveToFolderButton } from './ConvoFolderActions';
 import { cn } from '~/utils';
 
 function ConvoOptions({
@@ -53,8 +63,12 @@ function ConvoOptions({
   const menuId = useId();
   const shareButtonRef = useRef<HTMLButtonElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const createFolderButtonRef = useRef<HTMLButtonElement>(null);
+  const moveToFolderButtonRef = useRef<HTMLButtonElement>(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showCreateFolderDialog, setShowCreateFolderDialog] = useState(false);
+  const [showMoveToFolderDialog, setShowMoveToFolderDialog] = useState(false);
   const [announcement, setAnnouncement] = useState('');
 
   const archiveConvoMutation = useArchiveConvoMutation();
@@ -213,6 +227,26 @@ function ConvoOptions({
         ),
       },
       {
+        label: localize('com_ui_create_folder'),
+        onClick: () => setShowCreateFolderDialog(true),
+        hideOnClick: false,
+        icon: <FolderPlus className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+        ariaHasPopup: 'dialog' as const,
+        ariaControls: 'create-folder-dialog',
+        ref: createFolderButtonRef,
+        render: (props) => <button {...props} />,
+      },
+      {
+        label: localize('com_ui_move_to_folder'),
+        onClick: () => setShowMoveToFolderDialog(true),
+        hideOnClick: false,
+        icon: <FolderInput className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+        ariaHasPopup: 'dialog' as const,
+        ariaControls: 'move-to-folder-dialog',
+        ref: moveToFolderButtonRef,
+        render: (props) => <button {...props} />,
+      },
+      {
         label: localize('com_ui_archive'),
         onClick: handleArchiveClick,
         hideOnClick: false,
@@ -340,6 +374,24 @@ function ConvoOptions({
           showDeleteDialog={showDeleteDialog}
           conversationId={conversationId ?? ''}
           setShowDeleteDialog={setShowDeleteDialog}
+        />
+      )}
+      {showCreateFolderDialog && conversationId && (
+        <CreateFolderButton
+          open={showCreateFolderDialog}
+          onOpenChange={setShowCreateFolderDialog}
+          triggerRef={createFolderButtonRef}
+          conversationId={conversationId}
+          setMenuOpen={setIsPopoverActive}
+        />
+      )}
+      {showMoveToFolderDialog && conversationId && (
+        <MoveToFolderButton
+          open={showMoveToFolderDialog}
+          onOpenChange={setShowMoveToFolderDialog}
+          triggerRef={moveToFolderButtonRef}
+          conversationId={conversationId}
+          setMenuOpen={setIsPopoverActive}
         />
       )}
     </>

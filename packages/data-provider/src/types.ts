@@ -265,7 +265,8 @@ export type TAgentApiKeyListResponse = {
 
 export type TUpdateConversationRequest = {
   conversationId: string;
-  title: string;
+  title?: string;
+  parentId?: string | null;
 };
 
 export type TUpdateConversationResponse = TConversation;

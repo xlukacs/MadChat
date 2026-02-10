@@ -31,6 +31,7 @@ export const defaultRetrievalModels = [
   'gpt-4-turbo',
   'gpt-4-0125',
   'gpt-4-1106',
+  'gpt-5.2-codex',
 ];
 
 export const excludedKeys = new Set([

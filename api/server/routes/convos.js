@@ -187,35 +187,44 @@ router.post('/archive', validateConvoAccess, async (req, res) => {
 const MAX_CONVO_TITLE_LENGTH = 1024;
 
 /**
- * Updates a conversation's title.
+ * Updates a conversation's title and/or parent.
  * @route POST /update
  * @param {string} req.body.arg.conversationId - The conversation ID to update.
- * @param {string} req.body.arg.title - The new title for the conversation.
+ * @param {string} [req.body.arg.title] - The new title for the conversation.
+ * @param {string|null} [req.body.arg.parentId] - The parent conversation ID.
  * @returns {object} 201 - The updated conversation object.
  */
 router.post('/update', validateConvoAccess, async (req, res) => {
-  const { conversationId, title } = req.body.arg ?? {};
+  const { conversationId, title, parentId } = req.body.arg ?? {};
 
   if (!conversationId) {
     return res.status(400).json({ error: 'conversationId is required' });
   }
 
-  if (title === undefined) {
-    return res.status(400).json({ error: 'title is required' });
+  if (title === undefined && parentId === undefined) {
+    return res.status(400).json({ error: 'title or parentId is required' });
   }
 
-  if (typeof title !== 'string') {
+  if (title !== undefined && typeof title !== 'string') {
     return res.status(400).json({ error: 'title must be a string' });
   }
 
-  const sanitizedTitle = title.trim().slice(0, MAX_CONVO_TITLE_LENGTH);
+  if (parentId !== undefined && parentId !== null && typeof parentId !== 'string') {
+    return res.status(400).json({ error: 'parentId must be a string or null' });
+  }
+
+  const update = { conversationId };
+  if (title !== undefined) {
+    update.title = title.trim().slice(0, MAX_CONVO_TITLE_LENGTH);
+  }
+  if (parentId !== undefined) {
+    update.parentId = parentId;
+  }
 
   try {
-    const dbResponse = await saveConvo(
-      req,
-      { conversationId, title: sanitizedTitle },
-      { context: `POST /api/convos/update ${conversationId}` },
-    );
+    const dbResponse = await saveConvo(req, update, {
+      context: `POST /api/convos/update ${conversationId}`,
+    });
     res.status(201).json(dbResponse);
   } catch (error) {
     logger.error('Error updating conversation', error);
