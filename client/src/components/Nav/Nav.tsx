@@ -81,6 +81,10 @@ const Nav = memo(
     const isSmallScreen = useMediaQuery('(max-width: 768px)');
     const [newUser, setNewUser] = useLocalStorage('newUser', true);
     const [isChatsExpanded, setIsChatsExpanded] = useLocalStorage('chatsExpanded', true);
+    const [conversationViewMode, setConversationViewMode] = useLocalStorage<'flat' | 'organized'>(
+      'conversationViewMode',
+      'flat',
+    );
     const [showLoading, setShowLoading] = useState(false);
     const [tags, setTags] = useState<string[]>([]);
 
@@ -244,6 +248,8 @@ const Nav = memo(
                 isSearchLoading={isSearchLoading}
                 isChatsExpanded={isChatsExpanded}
                 setIsChatsExpanded={setIsChatsExpanded}
+                viewMode={conversationViewMode}
+                setViewMode={setConversationViewMode}
               />
             </div>
           </div>

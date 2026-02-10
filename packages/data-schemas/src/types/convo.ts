@@ -5,6 +5,7 @@ export interface IConversation extends Document {
   conversationId: string;
   title?: string;
   user?: string;
+  parentId?: string | null;
   messages?: Types.ObjectId[];
   // Fields provided by conversationPreset (adjust types as needed)
   endpoint?: string;

@@ -1,14 +1,14 @@
 import { useMemo, memo, type FC, useCallback, useEffect, useRef } from 'react';
 import throttle from 'lodash/throttle';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, FolderTree, ListTree } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
-import { Spinner, useMediaQuery } from '@librechat/client';
+import { Button, Spinner, useMediaQuery } from '@librechat/client';
 import { List, AutoSizer, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
 import type { TConversation } from 'librechat-data-provider';
 import { useLocalize, TranslationKeys, useFavorites, useShowMarketplace } from '~/hooks';
 import FavoritesList from '~/components/Nav/Favorites/FavoritesList';
 import { useActiveJobs } from '~/data-provider';
-import { groupConversationsByDate, cn } from '~/utils';
+import { groupConversationsByDate, buildOrganizedConversations, cn } from '~/utils';
 import Convo from './Convo';
 import store from '~/store';
 
@@ -32,6 +32,8 @@ interface ConversationsProps {
   isSearchLoading: boolean;
   isChatsExpanded: boolean;
   setIsChatsExpanded: (expanded: boolean) => void;
+  viewMode: 'flat' | 'organized';
+  setViewMode: (mode: 'flat' | 'organized') => void;
 }
 
 interface MeasuredRowProps {
@@ -74,24 +76,63 @@ LoadingSpinner.displayName = 'LoadingSpinner';
 interface ChatsHeaderProps {
   isExpanded: boolean;
   onToggle: () => void;
+  viewMode: 'flat' | 'organized';
+  onViewModeChange: (mode: 'flat' | 'organized') => void;
 }
 
 /** Collapsible header for the Chats section */
-const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle }) => {
-  const localize = useLocalize();
-  return (
-    <button
-      onClick={onToggle}
-      className="group flex w-full items-center justify-between rounded-lg px-1 py-2 text-xs font-bold text-text-secondary outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black dark:focus-visible:ring-white"
-      type="button"
-    >
-      <span className="select-none">{localize('com_ui_chats')}</span>
-      <ChevronDown
-        className={cn('h-3 w-3 transition-transform duration-200', isExpanded ? 'rotate-180' : '')}
-      />
-    </button>
-  );
-});
+const ChatsHeader: FC<ChatsHeaderProps> = memo(
+  ({ isExpanded, onToggle, viewMode, onViewModeChange }) => {
+    const localize = useLocalize();
+    return (
+      <div className="flex w-full items-center justify-between gap-1">
+        <button
+          onClick={onToggle}
+          className="group flex min-w-0 flex-1 items-center justify-between rounded-lg px-1 py-2 text-xs font-bold text-text-secondary outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black dark:focus-visible:ring-white"
+          type="button"
+        >
+          <span className="select-none">{localize('com_ui_chats')}</span>
+          <ChevronDown
+            className={cn(
+              'h-3 w-3 transition-transform duration-200',
+              isExpanded ? 'rotate-180' : '',
+            )}
+          />
+        </button>
+        <div className="flex items-center gap-0.5">
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            aria-label="Flat conversation list view"
+            title="Flat conversation list view"
+            className={cn(
+              'h-6 w-6 rounded-md border-none bg-transparent text-text-secondary hover:bg-surface-active-alt',
+              viewMode === 'flat' && 'bg-surface-active-alt text-text-primary',
+            )}
+            onClick={() => onViewModeChange('flat')}
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            aria-label="Organized conversation view"
+            title="Organized conversation view"
+            className={cn(
+              'h-6 w-6 rounded-md border-none bg-transparent text-text-secondary hover:bg-surface-active-alt',
+              viewMode === 'organized' && 'bg-surface-active-alt text-text-primary',
+            )}
+            onClick={() => onViewModeChange('organized')}
+          >
+            <FolderTree className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+    );
+  },
+);
 
 ChatsHeader.displayName = 'ChatsHeader';
 
@@ -113,7 +154,7 @@ type FlattenedItem =
   | { type: 'favorites' }
   | { type: 'chats-header' }
   | { type: 'header'; groupName: string }
-  | { type: 'convo'; convo: TConversation }
+  | { type: 'convo'; convo: TConversation; depth: number }
   | { type: 'loading' };
 
 const MemoizedConvo = memo(
@@ -157,6 +198,8 @@ const Conversations: FC<ConversationsProps> = ({
   isSearchLoading,
   isChatsExpanded,
   setIsChatsExpanded,
+  viewMode,
+  setViewMode,
 }) => {
   const localize = useLocalize();
   const search = useRecoilValue(store.search);
@@ -185,6 +228,10 @@ const Conversations: FC<ConversationsProps> = ({
     () => groupConversationsByDate(filteredConversations),
     [filteredConversations],
   );
+  const organizedConversations = useMemo(
+    () => buildOrganizedConversations(filteredConversations, 4),
+    [filteredConversations],
+  );
 
   const flattenedItems = useMemo(() => {
     const items: FlattenedItem[] = [];
@@ -195,17 +242,34 @@ const Conversations: FC<ConversationsProps> = ({
     items.push({ type: 'chats-header' });
 
     if (isChatsExpanded) {
-      groupedConversations.forEach(([groupName, convos]) => {
-        items.push({ type: 'header', groupName });
-        items.push(...convos.map((convo) => ({ type: 'convo' as const, convo })));
-      });
+      if (viewMode === 'organized') {
+        items.push(
+          ...organizedConversations.map(({ conversation, depth }) => ({
+            type: 'convo' as const,
+            convo: conversation,
+            depth,
+          })),
+        );
+      } else {
+        groupedConversations.forEach(([groupName, convos]) => {
+          items.push({ type: 'header', groupName });
+          items.push(...convos.map((convo) => ({ type: 'convo' as const, convo, depth: 0 })));
+        });
+      }
 
       if (isLoading) {
         items.push({ type: 'loading' } as any);
       }
     }
     return items;
-  }, [groupedConversations, isLoading, isChatsExpanded, shouldShowFavorites]);
+  }, [
+    groupedConversations,
+    organizedConversations,
+    isLoading,
+    isChatsExpanded,
+    shouldShowFavorites,
+    viewMode,
+  ]);
 
   // Store flattenedItems in a ref for keyMapper to access without recreating cache
   const flattenedItemsRef = useRef(flattenedItems);
@@ -292,12 +356,17 @@ const Conversations: FC<ConversationsProps> = ({
             <ChatsHeader
               isExpanded={isChatsExpanded}
               onToggle={() => setIsChatsExpanded(!isChatsExpanded)}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
             />
           </MeasuredRow>
         );
       }
 
       if (item.type === 'header') {
+        if (viewMode !== 'flat') {
+          return null;
+        }
         // First date header index depends on whether favorites row is included
         // With favorites: [favorites, chats-header, first-header] → index 2
         // Without favorites: [chats-header, first-header] → index 1
@@ -313,12 +382,14 @@ const Conversations: FC<ConversationsProps> = ({
         const isGenerating = activeJobIds.has(item.convo.conversationId ?? '');
         return (
           <MeasuredRow key={key} {...rowProps}>
-            <MemoizedConvo
-              conversation={item.convo}
-              retainView={moveToTop}
-              toggleNav={toggleNav}
-              isGenerating={isGenerating}
-            />
+            <div style={{ paddingLeft: `${Math.min(item.depth, 4) * 12}px` }}>
+              <MemoizedConvo
+                conversation={item.convo}
+                retainView={moveToTop}
+                toggleNav={toggleNav}
+                isGenerating={isGenerating}
+              />
+            </div>
           </MeasuredRow>
         );
       }
@@ -334,6 +405,8 @@ const Conversations: FC<ConversationsProps> = ({
       isSmallScreen,
       isChatsExpanded,
       setIsChatsExpanded,
+      viewMode,
+      setViewMode,
       shouldShowFavorites,
       activeJobIds,
     ],

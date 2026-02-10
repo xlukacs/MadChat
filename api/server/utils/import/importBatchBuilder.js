@@ -72,9 +72,10 @@ class ImportBatchBuilder {
    * @param {string} [title='Imported Chat'] - The title of the conversation. Defaults to 'Imported Chat'.
    * @param {Date} [createdAt] - The creation date of the conversation.
    * @param {TConversation} [originalConvo] - The original conversation.
+   * @param {string|null} [parentId] - Parent conversation ID for lightweight organization links.
    * @returns {{ conversation: TConversation, messages: TMessage[] }} The resulting conversation and messages.
    */
-  finishConversation(title, createdAt, originalConvo = {}) {
+  finishConversation(title, createdAt, originalConvo = {}, parentId = null) {
     const convo = {
       ...originalConvo,
       user: this.requestUserId,
@@ -86,6 +87,11 @@ class ImportBatchBuilder {
       endpoint: this.endpoint,
       model: originalConvo.model ?? openAISettings.model.default,
     };
+    if (parentId != null) {
+      convo.parentId = parentId;
+    } else if (convo.parentId == null) {
+      delete convo.parentId;
+    }
     convo._id && delete convo._id;
     this.conversations.push(convo);
 

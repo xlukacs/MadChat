@@ -137,6 +137,98 @@ export const groupConversationsByDate = (
   return Array.from(sortedGroups, ([key, value]) => [key, value]);
 };
 
+export type OrganizedConversationItem = {
+  conversation: TConversation;
+  depth: number;
+};
+
+export const buildOrganizedConversations = (
+  conversations: Array<TConversation | null>,
+  maxDepth = 4,
+): OrganizedConversationItem[] => {
+  if (!Array.isArray(conversations) || conversations.length === 0) {
+    return [];
+  }
+
+  const dedupedConversations: TConversation[] = [];
+  const seenConversationIds = new Set<string>();
+  const conversationMap = new Map<string, TConversation>();
+
+  for (const conversation of conversations) {
+    if (!conversation?.conversationId || seenConversationIds.has(conversation.conversationId)) {
+      continue;
+    }
+    seenConversationIds.add(conversation.conversationId);
+    dedupedConversations.push(conversation);
+    conversationMap.set(conversation.conversationId, conversation);
+  }
+
+  const childrenByParent = new Map<string, TConversation[]>();
+  const roots: TConversation[] = [];
+
+  for (const conversation of dedupedConversations) {
+    const conversationId = conversation.conversationId;
+    const parentId = conversation.parentId ?? null;
+    const parentExists = !!parentId && conversationMap.has(parentId);
+
+    if (!parentExists || parentId === conversationId) {
+      roots.push(conversation);
+      continue;
+    }
+
+    if (!childrenByParent.has(parentId)) {
+      childrenByParent.set(parentId, []);
+    }
+    childrenByParent.get(parentId)?.push(conversation);
+  }
+
+  const flattened: OrganizedConversationItem[] = [];
+  const visited = new Set<string>();
+  const safeMaxDepth = Math.max(0, maxDepth);
+
+  const walk = (conversation: TConversation, depth: number, lineage: Set<string>) => {
+    const conversationId = conversation.conversationId;
+    if (!conversationId || visited.has(conversationId)) {
+      return;
+    }
+
+    visited.add(conversationId);
+    flattened.push({
+      conversation,
+      depth: Math.min(depth, safeMaxDepth),
+    });
+
+    const children = childrenByParent.get(conversationId) ?? [];
+    if (depth >= safeMaxDepth || children.length === 0) {
+      return;
+    }
+
+    const nextLineage = new Set(lineage);
+    nextLineage.add(conversationId);
+
+    for (const child of children) {
+      if (!child.conversationId || nextLineage.has(child.conversationId)) {
+        continue;
+      }
+      walk(child, depth + 1, nextLineage);
+    }
+  };
+
+  for (const root of roots) {
+    walk(root, 0, new Set<string>());
+  }
+
+  // Ensure cyclic/orphaned chains still show up safely.
+  for (const conversation of dedupedConversations) {
+    if (!conversation.conversationId || visited.has(conversation.conversationId)) {
+      continue;
+    }
+    walk(conversation, 0, new Set<string>());
+  }
+
+  return flattened;
+};
+
 export type ConversationCursorData = {
   conversations: TConversation[];
   nextCursor?: string | null;

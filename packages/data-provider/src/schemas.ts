@@ -702,6 +702,7 @@ export const tConversationSchema = z.object({
   top_p: z.number().optional(),
   frequency_penalty: z.number().optional(),
   presence_penalty: z.number().optional(),
+  parentId: z.string().nullable().optional(),
   parentMessageId: z.string().optional(),
   maxOutputTokens: coerceNumber.nullable().optional(),
   maxContextTokens: coerceNumber.optional(),

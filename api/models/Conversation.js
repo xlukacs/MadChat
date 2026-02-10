@@ -99,6 +99,22 @@ module.exports = {
         update.conversationId = newConversationId;
       }
 
+      if (update.parentId != null) {
+        const targetConversationId = update.conversationId ?? conversationId;
+        if (update.parentId === targetConversationId) {
+          throw new Error('A conversation cannot be its own parent');
+        }
+
+        const parentConversation = await Conversation.findOne(
+          { conversationId: update.parentId, user: req.user.id },
+          'conversationId user',
+        ).lean();
+
+        if (!parentConversation) {
+          throw new Error('Parent conversation not found or unauthorized');
+        }
+      }
+
       if (req?.body?.isTemporary) {
         try {
           const appConfig = req.config;
@@ -243,7 +259,7 @@ module.exports = {
 
       const convos = await Conversation.find(query)
         .select(
-          'conversationId endpoint title createdAt updatedAt user model agent_id assistant_id spec iconURL',
+          'conversationId endpoint title createdAt updatedAt user model agent_id assistant_id spec iconURL parentId',
         )
         .sort(sortObj)
         .limit(limit + 1)

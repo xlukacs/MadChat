@@ -7,12 +7,18 @@ const { logViolation, getLogStores } = require('~/cache');
 const { USE_REDIS, CONVO_ACCESS_VIOLATION_SCORE: score = 0 } = process.env ?? {};
 
 /**
- * Helper function to get conversationId from different request body structures.
+ * Helper function to get conversation IDs from different request body structures.
  * @param {Object} body - The request body.
- * @returns {string|undefined} The conversationId.
+ * @returns {string[]} The conversation IDs.
  */
-const getConversationId = (body) => {
-  return body.conversationId ?? body.arg?.conversationId;
+const getConversationIds = (body = {}) => {
+  const ids = [
+    body.conversationId,
+    body.arg?.conversationId,
+    body.parentId,
+    body.arg?.parentId,
+  ].filter(Boolean);
+  return [...new Set(ids)];
 };
 
 /**
@@ -33,45 +39,50 @@ const validateConvoAccess = async (req, res, next) => {
   const namespace = ViolationTypes.CONVO_ACCESS;
   const cache = getLogStores(namespace);
 
-  const conversationId = getConversationId(req.body);
+  const conversationIds = getConversationIds(req.body);
+  const idsToValidate = conversationIds.filter((id) => id && id !== Constants.NEW_CONVO);
 
-  if (!conversationId || conversationId === Constants.NEW_CONVO) {
+  if (idsToValidate.length === 0) {
     return next();
   }
 
   const userId = req.user?.id ?? req.user?._id ?? '';
   const type = ViolationTypes.CONVO_ACCESS;
-  const key = `${isEnabled(USE_REDIS) ? namespace : ''}:${userId}:${conversationId}`;
 
   try {
-    if (cache) {
-      const cachedAccess = await cache.get(key);
-      if (cachedAccess === 'authorized') {
-        return next();
-      }
-    }
-
-    const conversation = await searchConversation(conversationId);
-
-    if (!conversation) {
-      return next();
-    }
-
-    if (conversation.user !== userId) {
-      const errorMessage = {
-        type,
-        error: 'User not authorized for this conversation',
-      };
+    for (const conversationId of idsToValidate) {
+      const key = `${isEnabled(USE_REDIS) ? namespace : ''}:${userId}:${conversationId}`;
 
       if (cache) {
-        await logViolation(req, res, type, errorMessage, score);
+        const cachedAccess = await cache.get(key);
+        if (cachedAccess === 'authorized') {
+          continue;
+        }
       }
-      return await denyRequest(req, res, errorMessage);
+
+      const conversation = await searchConversation(conversationId);
+
+      if (!conversation) {
+        continue;
+      }
+
+      if (conversation.user !== userId) {
+        const errorMessage = {
+          type,
+          error: 'User not authorized for this conversation',
+        };
+
+        if (cache) {
+          await logViolation(req, res, type, errorMessage, score);
+        }
+        return await denyRequest(req, res, errorMessage);
+      }
+
+      if (cache) {
+        await cache.set(key, 'authorized', Time.TEN_MINUTES);
+      }
     }
 
-    if (cache) {
-      await cache.set(key, 'authorized', Time.TEN_MINUTES);
-    }
     next();
   } catch (error) {
     console.error('Error validating conversation access:', error);

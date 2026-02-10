@@ -134,6 +134,7 @@ async function forkConversation({
       newTitle || originalConvo.title,
       new Date(),
       originalConvo,
+      originalConvoId,
     );
     await importBatchBuilder.saveBatch();
     logger.debug(
@@ -387,6 +388,7 @@ async function duplicateConversation({ userId, conversationId }) {
     originalConvo.title,
     new Date(),
     originalConvo,
+    conversationId,
   );
   await importBatchBuilder.saveBatch();
   logger.debug(
