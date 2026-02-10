@@ -74,9 +74,10 @@ class ImportBatchBuilder {
    * @param {string} [defaultModel] - Resolved default model for this endpoint
    *   (typically derived from the runtime models config). Used only when
    *   originalConvo.model is unset.
+   * @param {string|null} [parentId] - Parent conversation ID for lightweight organization links.
    * @returns {{ conversation: TConversation, messages: TMessage[] }} The resulting conversation and messages.
    */
-  finishConversation(title, createdAt, originalConvo = {}, defaultModel) {
+  finishConversation(title, createdAt, originalConvo = {}, defaultModel, parentId = null) {
     const fallbackModel =
       defaultModel ?? FALLBACK_MODEL_BY_ENDPOINT[this.endpoint] ?? openAISettings.model.default;
     const convo = {
@@ -90,6 +91,11 @@ class ImportBatchBuilder {
       endpoint: this.endpoint,
       model: originalConvo.model ?? fallbackModel,
     };
+    if (parentId != null) {
+      convo.parentId = parentId;
+    } else if (convo.parentId == null) {
+      delete convo.parentId;
+    }
     convo._id && delete convo._id;
     this.conversations.push(convo);
 

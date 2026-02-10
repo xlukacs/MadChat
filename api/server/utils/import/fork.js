@@ -133,6 +133,8 @@ async function forkConversation({
       newTitle || originalConvo.title,
       new Date(),
       originalConvo,
+      undefined,
+      originalConvoId,
     );
     await importBatchBuilder.saveBatch();
     logger.debug(
@@ -382,7 +384,13 @@ async function duplicateConversation({ userId, conversationId, title }) {
   cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
 
   const duplicateTitle = title || originalConvo.title;
-  const result = importBatchBuilder.finishConversation(duplicateTitle, new Date(), originalConvo);
+  const result = importBatchBuilder.finishConversation(
+    duplicateTitle,
+    new Date(),
+    originalConvo,
+    undefined,
+    conversationId,
+  );
   await importBatchBuilder.saveBatch();
   logger.debug(
     `user: ${userId} | New conversation "${duplicateTitle}" duplicated from conversation ID ${conversationId}`,
