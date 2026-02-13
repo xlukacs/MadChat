@@ -19,7 +19,7 @@ function timeoutPromise(ms: number, message?: string) {
 const promiseTimeoutMessage = 'Reader promise timed out';
 const maxPromiseTime = 15000;
 
-export default function StreamAudio({ index = 0 }) {
+export default function StreamAudio({ index = 0, onEnded }: { index?: number; onEnded?: () => void }) {
   const { token } = useAuthContext();
 
   const cacheTTS = useRecoilValue(store.cacheTTS);
@@ -35,7 +35,7 @@ export default function StreamAudio({ index = 0 }) {
   const [isFetching, setIsFetching] = useRecoilState(store.globalAudioFetchingFamily(index));
   const [globalAudioURL, setGlobalAudioURL] = useRecoilState(store.globalAudioURLFamily(index));
 
-  const { audioRef } = useCustomAudioRef({ setIsPlaying });
+  const { audioRef } = useCustomAudioRef({ setIsPlaying, onEnded });
   const { pauseGlobalAudio } = usePauseGlobalAudio();
 
   const { conversationId: paramId } = useParams();

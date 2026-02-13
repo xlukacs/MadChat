@@ -1,6 +1,7 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { useWatch } from 'react-hook-form';
-import { TextareaAutosize } from '@librechat/client';
+import { TextareaAutosize, TooltipAnchor } from '@librechat/client';
+import { AudioLines, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
 import {
@@ -19,7 +20,7 @@ import {
   useSubmitMessage,
   useFocusChatEffect,
 } from '~/hooks';
-import { mainTextareaId, BadgeItem } from '~/common';
+import { mainTextareaId, BadgeItem, globalAudioId } from '~/common';
 import AttachFileChat from './Files/AttachFileChat';
 import FileFormChat from './Files/FileFormChat';
 import { cn, removeFocusRings } from '~/utils';
@@ -36,8 +37,23 @@ import Mention from './Mention';
 import store from '~/store';
 
 const ChatForm = memo(({ index = 0 }: { index?: number }) => {
+  const VOICE_CHAT_AUTO_SEND_SECONDS = 3;
+  const VOICE_CHAT_DECIBEL_VALUE = -45;
+  const VOICE_CHAT_REARM_DELAY_MS = 500;
+  const VOICE_CHAT_BADGE_TIMEOUT_MS = 10_000;
+
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const voiceChatStartRecordingRef = useRef<(() => void) | null>(null);
+  const voiceSessionStartRef = useRef<number | null>(null);
+  const previousVoiceSettingsRef = useRef<{
+    conversationMode: boolean;
+    autoTranscribeAudio: boolean;
+    autoSendText: number;
+    decibelValue: number;
+    automaticPlayback: boolean;
+  } | null>(null);
+  const voiceRearmTimeoutRef = useRef<number | null>(null);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
 
@@ -45,15 +61,22 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   const [, setIsScrollable] = useState(false);
   const [visualRowCount, setVisualRowCount] = useState(1);
   const [isTextAreaFocused, setIsTextAreaFocused] = useState(false);
+  const [isMicListening, setIsMicListening] = useState(false);
+  const [voiceEndedDuration, setVoiceEndedDuration] = useState<number | null>(null);
   const [backupBadges, setBackupBadges] = useState<Pick<BadgeItem, 'id'>[]>([]);
 
   const SpeechToText = useRecoilValue(store.speechToText);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
   const chatDirection = useRecoilValue(store.chatDirection);
-  const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const isTemporary = useRecoilValue(store.isTemporary);
+  const [voiceChatMode, setVoiceChatMode] = useRecoilState(store.voiceChatMode);
+  const [conversationMode, setConversationMode] = useRecoilState(store.conversationMode);
+  const [autoTranscribeAudio, setAutoTranscribeAudio] = useRecoilState(store.autoTranscribeAudio);
+  const [autoSendText, setAutoSendText] = useRecoilState(store.autoSendText);
+  const [decibelValue, setDecibelValue] = useRecoilState(store.decibelValue);
+  const [automaticPlayback, setAutomaticPlayback] = useRecoilState(store.automaticPlayback);
 
   const [badges, setBadges] = useRecoilState(store.chatBadges);
   const [isEditingBadges, setIsEditingBadges] = useRecoilState(store.isEditingBadges);
@@ -190,6 +213,178 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   }, [backupBadges, setBadges, setIsEditingBadges]);
 
   const isMoreThanThreeRows = visualRowCount > 3;
+  const isVoiceChatAvailable = SpeechToText && TextToSpeech;
+  const shouldAutoplayAudio = TextToSpeech && (automaticPlayback || voiceChatMode);
+
+  const formatVoiceDuration = useCallback((seconds: number) => {
+    if (seconds < 60) {
+      return `${seconds}s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  }, []);
+
+  const handleVoiceModeStartRecording = useCallback(() => {
+    if (!voiceChatMode) {
+      return;
+    }
+
+    if (isSubmitting || isSubmittingAdded || showStopButton || showStopAdded) {
+      handleStopGenerating();
+    }
+
+    const globalAudio = document.getElementById(globalAudioId) as HTMLAudioElement | null;
+    if (globalAudio) {
+      globalAudio.pause();
+      globalAudio.currentTime = 0;
+    }
+  }, [
+    handleStopGenerating,
+    isSubmitting,
+    isSubmittingAdded,
+    showStopAdded,
+    showStopButton,
+    voiceChatMode,
+  ]);
+
+  const handleVoicePlaybackEnded = useCallback(() => {
+    if (
+      !voiceChatMode ||
+      isMicListening ||
+      isSubmitting ||
+      isSubmittingAdded ||
+      disableInputs ||
+      isNotAppendable
+    ) {
+      return;
+    }
+
+    if (voiceRearmTimeoutRef.current != null) {
+      window.clearTimeout(voiceRearmTimeoutRef.current);
+    }
+
+    voiceRearmTimeoutRef.current = window.setTimeout(() => {
+      voiceChatStartRecordingRef.current?.();
+    }, VOICE_CHAT_REARM_DELAY_MS);
+  }, [
+    disableInputs,
+    isMicListening,
+    isNotAppendable,
+    isSubmitting,
+    isSubmittingAdded,
+    voiceChatMode,
+  ]);
+
+  const handleToggleVoiceChatMode = useCallback(() => {
+    setVoiceChatMode((prev) => !prev);
+  }, [setVoiceChatMode]);
+
+  useEffect(() => {
+    if (!voiceChatMode) {
+      return;
+    }
+
+    if (previousVoiceSettingsRef.current == null) {
+      previousVoiceSettingsRef.current = {
+        conversationMode,
+        autoTranscribeAudio,
+        autoSendText,
+        decibelValue,
+        automaticPlayback,
+      };
+    }
+
+    if (!conversationMode) {
+      setConversationMode(true);
+    }
+    if (!autoTranscribeAudio) {
+      setAutoTranscribeAudio(true);
+    }
+    if (autoSendText === -1) {
+      setAutoSendText(VOICE_CHAT_AUTO_SEND_SECONDS);
+    }
+    if (decibelValue !== VOICE_CHAT_DECIBEL_VALUE) {
+      setDecibelValue(VOICE_CHAT_DECIBEL_VALUE);
+    }
+    if (!automaticPlayback) {
+      setAutomaticPlayback(true);
+    }
+  }, [
+    autoSendText,
+    autoTranscribeAudio,
+    automaticPlayback,
+    conversationMode,
+    decibelValue,
+    setAutoSendText,
+    setAutoTranscribeAudio,
+    setAutomaticPlayback,
+    setConversationMode,
+    setDecibelValue,
+    voiceChatMode,
+  ]);
+
+  useEffect(() => {
+    if (voiceChatMode || previousVoiceSettingsRef.current == null) {
+      return;
+    }
+
+    const previousSettings = previousVoiceSettingsRef.current;
+    setConversationMode(previousSettings.conversationMode);
+    setAutoTranscribeAudio(previousSettings.autoTranscribeAudio);
+    setAutoSendText(previousSettings.autoSendText);
+    setDecibelValue(previousSettings.decibelValue);
+    setAutomaticPlayback(previousSettings.automaticPlayback);
+    previousVoiceSettingsRef.current = null;
+  }, [
+    setAutoSendText,
+    setAutoTranscribeAudio,
+    setAutomaticPlayback,
+    setConversationMode,
+    setDecibelValue,
+    voiceChatMode,
+  ]);
+
+  useEffect(() => {
+    if (voiceChatMode && !isVoiceChatAvailable) {
+      setVoiceChatMode(false);
+    }
+  }, [isVoiceChatAvailable, setVoiceChatMode, voiceChatMode]);
+
+  useEffect(() => {
+    if (voiceChatMode) {
+      voiceSessionStartRef.current = Date.now();
+      setVoiceEndedDuration(null);
+      return;
+    }
+
+    if (voiceSessionStartRef.current != null) {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - voiceSessionStartRef.current) / 1000));
+      setVoiceEndedDuration(elapsedSeconds);
+      voiceSessionStartRef.current = null;
+    }
+  }, [voiceChatMode]);
+
+  useEffect(() => {
+    if (voiceEndedDuration == null) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setVoiceEndedDuration(null);
+    }, VOICE_CHAT_BADGE_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [voiceEndedDuration]);
+
+  useEffect(() => {
+    return () => {
+      if (voiceRearmTimeoutRef.current != null) {
+        window.clearTimeout(voiceRearmTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const baseClasses = useMemo(
     () =>
@@ -244,7 +439,9 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
               isTextAreaFocused ? 'shadow-lg' : 'shadow-md',
               isTemporary
                 ? 'border-violet-800/60 bg-violet-950/10'
-                : 'border-border-light bg-surface-chat',
+                : voiceChatMode
+                  ? 'border-emerald-800/60 bg-emerald-950/10'
+                  : 'border-border-light bg-surface-chat',
             )}
           >
             <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
@@ -256,6 +453,41 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
               setBadges={setBadges}
             />
             <FileFormChat conversation={conversation} />
+            {voiceEndedDuration != null && (
+              <div className="mx-3 mt-2 flex items-center justify-between rounded-xl border border-border-light bg-surface-secondary px-3 py-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <AudioLines className="h-4 w-4" aria-hidden="true" />
+                  <div className="flex items-center gap-2">
+                    <span>{localize('com_ui_voice_chat_ended')}</span>
+                    <span className="text-text-secondary">{formatVoiceDuration(voiceEndedDuration)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={localize('com_ui_feedback_positive')}
+                    className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  >
+                    <ThumbsUp className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={localize('com_ui_feedback_negative')}
+                    className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  >
+                    <ThumbsDown className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={localize('com_ui_close')}
+                    className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                    onClick={() => setVoiceEndedDuration(null)}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )}
             {endpoint && (
               <div className={cn('flex', isRTL ? 'flex-row-reverse' : 'flex-row')}>
                 <div
@@ -338,6 +570,11 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                   textAreaRef={textAreaRef}
                   disabled={disableInputs || isNotAppendable}
                   isSubmitting={isSubmitting}
+                  onStartRecording={handleVoiceModeStartRecording}
+                  onListeningChange={setIsMicListening}
+                  registerStartRecording={(startRecording) => {
+                    voiceChatStartRecordingRef.current = startRecording;
+                  }}
                 />
               )}
               <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
@@ -353,8 +590,36 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                   )
                 )}
               </div>
+              <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
+                <TooltipAnchor
+                  description={
+                    isVoiceChatAvailable
+                      ? localize('com_ui_voice_chat_mode')
+                      : localize('com_ui_voice_chat_mode_unavailable')
+                  }
+                  render={
+                    <button
+                      id="voice-chat-mode-toggle"
+                      type="button"
+                      aria-label={localize('com_ui_voice_chat_mode')}
+                      aria-pressed={voiceChatMode}
+                      onClick={handleToggleVoiceChatMode}
+                      disabled={!isVoiceChatAvailable}
+                      className={cn(
+                        'flex size-10 items-center justify-center rounded-full border transition-all',
+                        voiceChatMode
+                          ? 'border-transparent bg-white text-black shadow-md dark:bg-white dark:text-black'
+                          : 'border-border-light bg-transparent text-text-secondary hover:bg-surface-hover',
+                        !isVoiceChatAvailable && 'cursor-not-allowed opacity-60',
+                      )}
+                    >
+                      <AudioLines className="h-5 w-5" aria-hidden="true" />
+                    </button>
+                  }
+                />
+              </div>
             </div>
-            {TextToSpeech && automaticPlayback && <StreamAudio index={index} />}
+            {shouldAutoplayAudio && <StreamAudio index={index} onEnded={handleVoicePlaybackEnded} />}
           </div>
         </div>
       </div>
