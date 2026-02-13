@@ -12,6 +12,7 @@ import lang from './language';
 import settings from './settings';
 import misc from './misc';
 import isTemporary from './temporary';
+import voiceChat from './voiceChat';
 export * from './agents';
 export * from './mcp';
 export * from './favorites';
@@ -32,4 +33,5 @@ export default {
   ...settings,
   ...misc,
   ...isTemporary,
+  ...voiceChat,
 };
