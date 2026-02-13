@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { MicOff } from 'lucide-react';
 import { useToastContext, TooltipAnchor, ListeningIcon, Spinner } from '@librechat/client';
 import { useLocalize, useSpeechToText, useGetAudioSettings } from '~/hooks';
@@ -13,12 +13,18 @@ export default function AudioRecorder({
   methods,
   textAreaRef,
   isSubmitting,
+  onStartRecording,
+  registerStartRecording,
+  onListeningChange,
 }: {
   disabled: boolean;
   ask: (data: { text: string }) => void;
   methods: ReturnType<typeof useChatFormContext>;
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   isSubmitting: boolean;
+  onStartRecording?: () => void;
+  registerStartRecording?: (startRecording: () => void) => void;
+  onListeningChange?: (isListening: boolean) => void;
 }) {
   const { setValue, reset, getValues } = methods;
   const localize = useLocalize();
@@ -81,18 +87,35 @@ export default function AudioRecorder({
     return null;
   }
 
-  const handleStartRecording = async () => {
+  const handleStartRecording = useCallback(() => {
+    onStartRecording?.();
     existingTextRef.current = getValues('text') || '';
     startRecording();
-  };
+  }, [getValues, onStartRecording, startRecording]);
 
-  const handleStopRecording = async () => {
+  const handleStopRecording = useCallback(() => {
     stopRecording();
     /** For browser STT, clear the reference since text was already being updated */
     if (!isExternalSTT(speechToTextEndpoint)) {
       existingTextRef.current = '';
     }
-  };
+  }, [speechToTextEndpoint, stopRecording]);
+
+  useEffect(() => {
+    onListeningChange?.(isListening === true);
+  }, [isListening, onListeningChange]);
+
+  useEffect(() => {
+    if (registerStartRecording == null) {
+      return;
+    }
+
+    registerStartRecording(() => {
+      if (isListening !== true) {
+        handleStartRecording();
+      }
+    });
+  }, [handleStartRecording, isListening, registerStartRecording]);
 
   const renderIcon = () => {
     if (isListening === true) {
