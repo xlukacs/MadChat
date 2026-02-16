@@ -5,6 +5,7 @@ const { getAppConfig } = require('~/server/services/Config');
 const DEFAULT_REALTIME_URL = 'https://api.openai.com/v1/realtime/calls';
 const DEFAULT_REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 const DEFAULT_REALTIME_VOICE = 'alloy';
+const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 
 async function createRealtimeSession(req, res) {
   try {
@@ -32,6 +33,10 @@ async function createRealtimeSession(req, res) {
     const realtimeUrl = realtimeConfig?.url || DEFAULT_REALTIME_URL;
     const model = requestedModel || realtimeConfig?.model || DEFAULT_REALTIME_MODEL;
     const voice = requestedVoice || realtimeConfig?.voice || DEFAULT_REALTIME_VOICE;
+    const transcriptionModel =
+      realtimeConfig?.transcriptionModel ||
+      appConfig?.speech?.stt?.openai?.model ||
+      DEFAULT_TRANSCRIPTION_MODEL;
     const sessionInstructions =
       typeof instructions === 'string' && instructions.trim().length > 0
         ? instructions
@@ -41,6 +46,11 @@ async function createRealtimeSession(req, res) {
       type: 'realtime',
       model,
       audio: {
+        input: {
+          transcription: {
+            model: transcriptionModel,
+          },
+        },
         output: {
           voice,
         },
