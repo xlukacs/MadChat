@@ -23,6 +23,7 @@ type RealtimeVoiceEvent = {
 type UseRealtimeVoiceOptions = {
   model?: string;
   voice?: string;
+  transcriptionModel?: string;
   instructions?: string;
   onTranscriptDelta?: (text: string) => void;
   onAgentTranscript?: (text: string) => void;
@@ -101,6 +102,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       }
 
       if (type === 'input_audio_buffer.speech_started') {
+        setUserTranscript('');
         setStatus('listening');
       }
 
@@ -136,7 +138,10 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         }
       }
 
-      if (type === 'conversation.item.input_audio_transcription.delta') {
+      if (
+        type === 'conversation.item.input_audio_transcription.delta' ||
+        type === 'conversation.item.input_audio_transcript.delta'
+      ) {
         const delta = String(event.delta ?? '');
         if (delta.length > 0) {
           setUserTranscript((prev) => {
@@ -147,7 +152,10 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         }
       }
 
-      if (type === 'conversation.item.input_audio_transcription.completed') {
+      if (
+        type === 'conversation.item.input_audio_transcription.completed' ||
+        type === 'conversation.item.input_audio_transcript.completed'
+      ) {
         const text = String(event.transcript ?? event.text ?? '').trim();
         if (text.length > 0) {
           setUserTranscript(text);
@@ -258,6 +266,11 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
             type: 'realtime',
             model: optionsRef.current.model,
             audio: {
+              input: {
+                transcription: {
+                  model: optionsRef.current.transcriptionModel || 'gpt-4o-mini-transcribe',
+                },
+              },
               output: {
                 voice: optionsRef.current.voice,
               },
