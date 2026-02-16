@@ -5,20 +5,24 @@ import useGetAudioSettings from './useGetAudioSettings';
 const useSpeechToText = (
   setText: (text: string) => void,
   onTranscriptionComplete: (text: string) => void,
+  options?: {
+    preferExternal?: boolean;
+  },
 ): {
   isLoading?: boolean;
   isListening?: boolean;
   stopRecording: () => void | (() => Promise<void>);
   startRecording: () => void | (() => Promise<void>);
+  activeSource: 'external' | 'browser';
 } => {
   const { speechToTextEndpoint } = useGetAudioSettings();
-  const externalSpeechToText = speechToTextEndpoint === 'external';
 
   const {
     isListening: speechIsListeningBrowser,
     isLoading: speechIsLoadingBrowser,
     startRecording: startSpeechRecordingBrowser,
     stopRecording: stopSpeechRecordingBrowser,
+    isSupported: browserSupported,
   } = useSpeechToTextBrowser(setText, onTranscriptionComplete);
 
   const {
@@ -26,23 +30,41 @@ const useSpeechToText = (
     isLoading: speechIsLoadingExternal,
     externalStartRecording: startSpeechRecordingExternal,
     externalStopRecording: stopSpeechRecordingExternal,
+    isSupported: externalSupported,
   } = useSpeechToTextExternal(setText, onTranscriptionComplete);
 
-  const isListening = externalSpeechToText ? speechIsListeningExternal : speechIsListeningBrowser;
-  const isLoading = externalSpeechToText ? speechIsLoadingExternal : speechIsLoadingBrowser;
+  const preferExternal = options?.preferExternal === true || speechToTextEndpoint === 'external';
+  const useExternal = preferExternal && externalSupported;
+  const useBrowser = !useExternal && browserSupported;
 
-  const startRecording = externalSpeechToText
+  const isListening = useExternal
+    ? speechIsListeningExternal
+    : useBrowser
+      ? speechIsListeningBrowser
+      : false;
+  const isLoading = useExternal
+    ? speechIsLoadingExternal
+    : useBrowser
+      ? speechIsLoadingBrowser
+      : false;
+
+  const startRecording = useExternal
     ? startSpeechRecordingExternal
-    : startSpeechRecordingBrowser;
-  const stopRecording = externalSpeechToText
+    : useBrowser
+      ? startSpeechRecordingBrowser
+      : () => undefined;
+  const stopRecording = useExternal
     ? stopSpeechRecordingExternal
-    : stopSpeechRecordingBrowser;
+    : useBrowser
+      ? stopSpeechRecordingBrowser
+      : () => undefined;
 
   return {
     isLoading,
     isListening,
     stopRecording,
     startRecording,
+    activeSource: useExternal ? 'external' : 'browser',
   };
 };
 

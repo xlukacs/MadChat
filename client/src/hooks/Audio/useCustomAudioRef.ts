@@ -23,6 +23,11 @@ export default function useCustomAudioRef({
   const audioRef = useRef<CustomAudioElement | null>(null);
   const hasProcessedEnd = useRef(false);
   useEffect(() => {
+    const audioElement = audioRef.current;
+    if (!audioElement) {
+      return;
+    }
+
     let lastTimeUpdate: number | null = null;
     let sameTimeUpdateCount = 0;
 
@@ -43,13 +48,14 @@ export default function useCustomAudioRef({
     const handleStart = () => {
       hasProcessedEnd.current = false;
       setIsPlaying(true);
-      console.log('global audio started');
       if (audioRef.current) {
+        audioRef.current.muted = false;
         audioRef.current.customStarted = true;
       }
     };
 
     const handlePause = () => {
+      setIsPlaying(false);
       console.log('global audio paused');
       if (audioRef.current) {
         audioRef.current.customPaused = true;
@@ -77,29 +83,23 @@ export default function useCustomAudioRef({
       }
     };
 
-    const audioElement = audioRef.current;
+    audioElement.addEventListener('ended', handleEnded);
+    audioElement.addEventListener('play', handleStart);
+    audioElement.addEventListener('pause', handlePause);
+    audioElement.addEventListener('timeupdate', handleTimeUpdate);
 
-    if (audioRef.current) {
-      audioRef.current.addEventListener('ended', handleEnded);
-      audioRef.current.addEventListener('play', handleStart);
-      audioRef.current.addEventListener('pause', handlePause);
-      audioRef.current.addEventListener('timeupdate', handleTimeUpdate);
-
-      audioRef.current.customProps = {
-        customStarted: false,
-        customEnded: false,
-        customPaused: false,
-      };
-    }
+    audioElement.customProps = {
+      customStarted: false,
+      customEnded: false,
+      customPaused: false,
+    };
 
     return () => {
-      if (audioElement) {
-        audioElement.removeEventListener('ended', handleEnded);
-        audioElement.removeEventListener('play', handleStart);
-        audioElement.removeEventListener('pause', handlePause);
-        audioElement.removeEventListener('timeupdate', handleTimeUpdate);
-        URL.revokeObjectURL(audioElement.src);
-      }
+      audioElement.removeEventListener('ended', handleEnded);
+      audioElement.removeEventListener('play', handleStart);
+      audioElement.removeEventListener('pause', handlePause);
+      audioElement.removeEventListener('timeupdate', handleTimeUpdate);
+      URL.revokeObjectURL(audioElement.src);
     };
   }, [onEnded, setIsPlaying]);
 

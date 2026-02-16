@@ -10,6 +10,12 @@ import { useAuthContext } from '~/hooks';
 import { globalAudioId } from '~/common';
 import store from '~/store';
 
+/**
+ * AGENT VOICE PIPELINE ONLY.
+ * This component handles: agent message text → TTS fetch → playback.
+ * It must not read or write user STT state (mic, transcript, form text).
+ * User pipeline (AudioRecorder, STT, user message submit) is separate.
+ */
 function timeoutPromise(ms: number, message?: string) {
   return new Promise((_, reject) =>
     setTimeout(() => reject(new Error(message ?? 'Promise timed out')), ms),
@@ -49,11 +55,11 @@ export default function StreamAudio({ index = 0, onEnded }: { index?: number; on
 
   useEffect(() => {
     const latestText = getLatestText(latestMessage);
+    const hasEnoughTextForStreaming = (latestText?.length ?? 0) >= 20;
 
     const shouldFetch = !!(
       token != null &&
       automaticPlayback &&
-      !isSubmitting &&
       latestMessage &&
       !latestMessage.isCreatedByUser &&
       latestText &&
@@ -61,7 +67,8 @@ export default function StreamAudio({ index = 0, onEnded }: { index?: number; on
       !latestMessage.messageId.includes('_') &&
       !isFetching &&
       activeRunId != null &&
-      activeRunId !== audioRunId
+      activeRunId !== audioRunId &&
+      (hasEnoughTextForStreaming || !isSubmitting)
     );
 
     if (!shouldFetch) {
@@ -83,7 +90,8 @@ export default function StreamAudio({ index = 0, onEnded }: { index?: number; on
         const cachedResponse = await cache.match(cacheKey);
 
         setAudioRunId(activeRunId);
-        if (cachedResponse) {
+        const useCache = !isSubmitting && cacheKey.length > 0;
+        if (useCache && cachedResponse) {
           logger.log('Audio found in cache');
           const audioBlob = await cachedResponse.blob();
           const blobUrl = URL.createObjectURL(audioBlob);

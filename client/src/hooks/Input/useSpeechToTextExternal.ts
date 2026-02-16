@@ -9,6 +9,12 @@ const useSpeechToTextExternal = (
   setText: (text: string) => void,
   onTranscriptionComplete: (text: string) => void,
 ) => {
+  const isSupported =
+    typeof window !== 'undefined' &&
+    typeof window.MediaRecorder !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia;
+
   const { showToast } = useToastContext();
   const { speechToTextEndpoint } = useGetAudioSettings();
   const isExternalSTTEnabled = speechToTextEndpoint === 'external';
@@ -163,8 +169,17 @@ const useSpeechToTextExternal = (
   };
 
   const startRecording = async () => {
+    if (!isSupported) {
+      showToast({ message: 'MediaRecorder is not supported in this browser', status: 'error' });
+      return;
+    }
+
     if (isRequestBeingMade) {
       showToast({ message: 'A request is already being made. Please wait.', status: 'warning' });
+      return;
+    }
+
+    if (mediaRecorderRef.current?.state === 'recording' || isListening) {
       return;
     }
 
@@ -276,6 +291,7 @@ const useSpeechToTextExternal = (
     externalStopRecording,
     externalStartRecording,
     isLoading: isProcessing,
+    isSupported,
   };
 };
 
