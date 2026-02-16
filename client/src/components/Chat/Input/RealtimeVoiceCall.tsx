@@ -1,8 +1,12 @@
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { v4 } from 'uuid';
+import { Constants } from 'librechat-data-provider';
+import type { TConversation, TMessage } from 'librechat-data-provider';
 import { AlertTriangle, Radio } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { useGetCustomConfigSpeechQuery } from 'librechat-data-provider/react-query';
-import { useLocalize, useRealtimeVoice } from '~/hooks';
+import { useLocalize, useRealtimeVoice, useSaveRealtimeMessage } from '~/hooks';
 import type { VoiceCallStatus } from '~/store/voiceChat';
 import VoiceModeFloatingBar from './VoiceModeFloatingBar';
 import store from '~/store';
@@ -20,15 +24,80 @@ function mapRealtimeStatusToCallStatus(status: string): VoiceCallStatus {
   return 'idle';
 }
 
-function RealtimeVoiceCall({ onEndCall }: { onEndCall: () => void }) {
+type RealtimeVoiceCallProps = {
+  onEndCall: () => void;
+  conversation: TConversation | null;
+  setConversation: (conversation: TConversation | null) => void;
+  getMessages: () => TMessage[] | undefined;
+  setMessages: (messages: TMessage[]) => void;
+};
+
+function RealtimeVoiceCall({
+  onEndCall,
+  conversation,
+  setConversation,
+  getMessages,
+  setMessages,
+}: RealtimeVoiceCallProps) {
   const localize = useLocalize();
+  const navigate = useNavigate();
   const voice = useRecoilValue(store.voice);
   const [, setVoiceCallStatus] = useRecoilState(store.voiceCallStatus);
   const [, setVoiceCallInterimTranscript] = useRecoilState(store.voiceCallInterimTranscript);
   const { data: speechConfig } = useGetCustomConfigSpeechQuery({ enabled: true });
+  const saveRealtimeMessage = useSaveRealtimeMessage();
+  const pendingUserMessageIdRef = useRef<string | null>(null);
 
   const realtimeModel = speechConfig?.realtimeModel || 'gpt-4o-realtime-preview-2024-12-17';
   const realtimeVoice = speechConfig?.realtimeVoice || voice || 'alloy';
+  const endpoint = conversation?.endpointType ?? conversation?.endpoint ?? '';
+
+  const ensureConversationId = useCallback(() => {
+    const currentConversationId = conversation?.conversationId;
+    if (currentConversationId && currentConversationId !== Constants.NEW_CONVO) {
+      return currentConversationId;
+    }
+
+    const createdConversationId = v4();
+    setConversation({
+      ...(conversation ?? {}),
+      conversationId: createdConversationId,
+    } as TConversation);
+    void navigate(`/c/${createdConversationId}`, { replace: true });
+    return createdConversationId;
+  }, [conversation, navigate, setConversation]);
+
+  const persistMessage = useCallback(
+    async (message: TMessage) => {
+      await saveRealtimeMessage({
+        conversationId: message.conversationId ?? '',
+        message: {
+          messageId: message.messageId,
+          conversationId: message.conversationId,
+          parentMessageId: message.parentMessageId ?? Constants.NO_PARENT,
+          text: message.text ?? '',
+          sender: message.sender,
+          isCreatedByUser: message.isCreatedByUser,
+          endpoint: message.endpoint ?? endpoint,
+          model: message.model,
+          unfinished: false,
+          error: false,
+        },
+      });
+    },
+    [endpoint, saveRealtimeMessage],
+  );
+
+  const upsertMessageToView = useCallback(
+    (message: TMessage) => {
+      const existing = getMessages() ?? [];
+      if (existing.some((entry) => entry.messageId === message.messageId)) {
+        return;
+      }
+      setMessages([...existing, message]);
+    },
+    [getMessages, setMessages],
+  );
 
   const {
     status,
@@ -44,7 +113,69 @@ function RealtimeVoiceCall({ onEndCall }: { onEndCall: () => void }) {
     onTranscriptDelta: (text) => {
       setVoiceCallInterimTranscript(text);
     },
+    onUserTurnComplete: (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const currentMessages = getMessages() ?? [];
+      const parentMessageId =
+        currentMessages[currentMessages.length - 1]?.messageId ?? Constants.NO_PARENT;
+      const conversationId = ensureConversationId();
+      const userMessageId = v4();
+      const userMessage: TMessage = {
+        messageId: userMessageId,
+        conversationId,
+        parentMessageId,
+        sender: 'User',
+        text: trimmed,
+        isCreatedByUser: true,
+        endpoint,
+        error: false,
+        unfinished: false,
+        clientTimestamp: new Date().toLocaleString('sv').replace(' ', 'T'),
+      };
+
+      pendingUserMessageIdRef.current = userMessageId;
+      upsertMessageToView(userMessage);
+      void persistMessage(userMessage).catch((err) => {
+        console.error('Failed to persist realtime user message', err);
+      });
+    },
+    onAgentTurnComplete: (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const currentMessages = getMessages() ?? [];
+      const conversationId = ensureConversationId();
+      const parentMessageId =
+        pendingUserMessageIdRef.current ??
+        currentMessages[currentMessages.length - 1]?.messageId ??
+        Constants.NO_PARENT;
+      const assistantMessage: TMessage = {
+        messageId: v4(),
+        conversationId,
+        parentMessageId,
+        sender: 'Assistant',
+        text: trimmed,
+        isCreatedByUser: false,
+        endpoint,
+        model: realtimeModel,
+        error: false,
+        unfinished: false,
+      };
+
+      pendingUserMessageIdRef.current = null;
+      upsertMessageToView(assistantMessage);
+      void persistMessage(assistantMessage).catch((err) => {
+        console.error('Failed to persist realtime assistant message', err);
+      });
+    },
     onEnded: () => {
+      pendingUserMessageIdRef.current = null;
       setVoiceCallInterimTranscript('');
       setVoiceCallStatus('idle');
     },
@@ -73,6 +204,7 @@ function RealtimeVoiceCall({ onEndCall }: { onEndCall: () => void }) {
   }, [setVoiceCallInterimTranscript, userTranscript]);
 
   const handleEnd = () => {
+    pendingUserMessageIdRef.current = null;
     disconnect();
     onEndCall();
   };

@@ -105,6 +105,9 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     files,
     setFiles,
     conversation,
+    setConversation,
+    getMessages,
+    setMessages,
     isSubmitting,
     filesLoading,
     newConversation,
@@ -539,7 +542,15 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   );
 
   if (isRealtimeCallActive) {
-    return <RealtimeVoiceCall onEndCall={() => setVoiceChatMode(false)} />;
+    return (
+      <RealtimeVoiceCall
+        onEndCall={() => setVoiceChatMode(false)}
+        conversation={conversation}
+        setConversation={setConversation}
+        getMessages={getMessages}
+        setMessages={setMessages}
+      />
+    );
   }
 
   if (isCallModeActive) {
