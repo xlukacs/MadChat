@@ -22,6 +22,7 @@ import {
   DecibelSelector,
 } from './STT';
 import ConversationModeSwitch from './ConversationModeSwitch';
+import VoiceModeSelector from './VoiceModeSelector';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -53,6 +54,7 @@ function Speech() {
   const [languageTTS, setLanguageTTS] = useRecoilState<string>(store.languageTTS);
   const [automaticPlayback, setAutomaticPlayback] = useRecoilState(store.automaticPlayback);
   const [playbackRate, setPlaybackRate] = useRecoilState(store.playbackRate);
+  const realtimeEnabled = `${data?.realtimeEnabled ?? ''}` === 'true';
 
   const updateSetting = useCallback(
     (key: string, newValue: string | number) => {
@@ -188,6 +190,8 @@ function Speech() {
 
       <Tabs.Content value={'simple'} tabIndex={-1}>
         <div className="flex flex-col gap-3 text-sm text-text-primary">
+          <VoiceModeSelector realtimeEnabled={realtimeEnabled} />
+          <div className="h-px bg-border-medium" role="none" />
           <SpeechToTextSwitch />
           <EngineSTTDropdown external={sttExternal} />
           <LanguageSTTDropdown />
@@ -200,6 +204,8 @@ function Speech() {
 
       <Tabs.Content value={'advanced'} tabIndex={-1}>
         <div className="flex flex-col gap-3 text-sm text-text-primary">
+          <VoiceModeSelector realtimeEnabled={realtimeEnabled} />
+          <div className="h-px bg-border-medium" role="none" />
           <ConversationModeSwitch />
           <div className="mt-2 h-px bg-border-medium" role="none" />
           <SpeechToTextSwitch />

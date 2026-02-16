@@ -4,6 +4,7 @@ import { TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { AudioLines, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
+import { useGetCustomConfigSpeechQuery } from 'librechat-data-provider/react-query';
 import {
   useChatContext,
   useChatFormContext,
@@ -20,13 +21,16 @@ import {
   useSubmitMessage,
   useFocusChatEffect,
 } from '~/hooks';
-import { mainTextareaId, BadgeItem, globalAudioId } from '~/common';
+import { usePauseGlobalAudio } from '~/hooks/Audio';
+import { mainTextareaId, BadgeItem } from '~/common';
 import AttachFileChat from './Files/AttachFileChat';
 import FileFormChat from './Files/FileFormChat';
 import { cn, removeFocusRings } from '~/utils';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
 import AudioRecorder from './AudioRecorder';
+import RealtimeVoiceCall from './RealtimeVoiceCall';
+import VoiceModeFloatingBar from './VoiceModeFloatingBar';
 import CollapseChat from './CollapseChat';
 import StreamAudio from './StreamAudio';
 import StopButton from './StopButton';
@@ -38,6 +42,7 @@ import store from '~/store';
 
 const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   const VOICE_CHAT_AUTO_SEND_SECONDS = 3;
+  const VOICE_CHAT_CALL_AUTO_SEND_SECONDS = 1.5;
   const VOICE_CHAT_DECIBEL_VALUE = -45;
   const VOICE_CHAT_REARM_DELAY_MS = 500;
   const VOICE_CHAT_BADGE_TIMEOUT_MS = 10_000;
@@ -54,6 +59,7 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     automaticPlayback: boolean;
   } | null>(null);
   const voiceRearmTimeoutRef = useRef<number | null>(null);
+  const suppressTranscriptRef = useRef(false);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
 
@@ -62,6 +68,8 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   const [visualRowCount, setVisualRowCount] = useState(1);
   const [isTextAreaFocused, setIsTextAreaFocused] = useState(false);
   const [isMicListening, setIsMicListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [sttSource, setSttSource] = useState<'external' | 'browser'>('browser');
   const [voiceEndedDuration, setVoiceEndedDuration] = useState<number | null>(null);
   const [backupBadges, setBackupBadges] = useState<Pick<BadgeItem, 'id'>[]>([]);
 
@@ -71,8 +79,13 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const isTemporary = useRecoilValue(store.isTemporary);
+  const { data: speechConfig } = useGetCustomConfigSpeechQuery({ enabled: true });
   const [voiceChatMode, setVoiceChatMode] = useRecoilState(store.voiceChatMode);
+  const [voiceMode] = useRecoilState(store.voiceMode);
+  const [, setVoiceCallStatus] = useRecoilState(store.voiceCallStatus);
+  const [, setVoiceCallInterimTranscript] = useRecoilState(store.voiceCallInterimTranscript);
   const [conversationMode, setConversationMode] = useRecoilState(store.conversationMode);
+  const globalAudioPlaying = useRecoilValue(store.globalAudioPlayingFamily(index));
   const [autoTranscribeAudio, setAutoTranscribeAudio] = useRecoilState(store.autoTranscribeAudio);
   const [autoSendText, setAutoSendText] = useRecoilState(store.autoSendText);
   const [decibelValue, setDecibelValue] = useRecoilState(store.decibelValue);
@@ -97,6 +110,7 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     newConversation,
     handleStopGenerating,
   } = useChatContext();
+  const { pauseGlobalAudio } = usePauseGlobalAudio(index);
   const {
     generateConversation,
     conversation: addedConvo,
@@ -213,8 +227,16 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
   }, [backupBadges, setBadges, setIsEditingBadges]);
 
   const isMoreThanThreeRows = visualRowCount > 3;
-  const isVoiceChatAvailable = SpeechToText && TextToSpeech;
-  const shouldAutoplayAudio = TextToSpeech && (automaticPlayback || voiceChatMode);
+  const realtimeEnabled = `${speechConfig?.realtimeEnabled ?? ''}` === 'true';
+  const isRealtimeMode = voiceMode === 'realtime';
+  const isLegacyVoiceAvailable = SpeechToText && TextToSpeech;
+  const isVoiceModeBlocked = disableInputs || isNotAppendable || !endpoint;
+  const canUseLegacyVoiceMode = isLegacyVoiceAvailable && !isVoiceModeBlocked;
+  const canUseRealtimeVoiceMode = realtimeEnabled && !isVoiceModeBlocked;
+  const canUseVoiceMode = isRealtimeMode ? canUseRealtimeVoiceMode : canUseLegacyVoiceMode;
+  const isCallModeActive = !isRealtimeMode && voiceChatMode && canUseLegacyVoiceMode;
+  const isRealtimeCallActive = isRealtimeMode && voiceChatMode && canUseRealtimeVoiceMode;
+  const shouldAutoplayAudio = TextToSpeech && (automaticPlayback || isCallModeActive);
 
   const formatVoiceDuration = useCallback((seconds: number) => {
     if (seconds < 60) {
@@ -226,38 +248,25 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     return `${minutes}m ${remainingSeconds}s`;
   }, []);
 
-  const handleVoiceModeStartRecording = useCallback(() => {
-    if (!voiceChatMode) {
+  const handleVoiceInterruption = useCallback(() => {
+    if (!isCallModeActive) {
       return;
     }
 
-    if (isSubmitting || isSubmittingAdded || showStopButton || showStopAdded) {
-      handleStopGenerating();
+    if (isSubmitting || showStopButton) {
+      handleStopGenerating({
+        preventDefault: () => undefined,
+      } as React.MouseEvent<HTMLButtonElement>);
     }
+    pauseGlobalAudio();
+  }, [isCallModeActive, pauseGlobalAudio, handleStopGenerating, isSubmitting, showStopButton]);
 
-    const globalAudio = document.getElementById(globalAudioId) as HTMLAudioElement | null;
-    if (globalAudio) {
-      globalAudio.pause();
-      globalAudio.currentTime = 0;
-    }
-  }, [
-    handleStopGenerating,
-    isSubmitting,
-    isSubmittingAdded,
-    showStopAdded,
-    showStopButton,
-    voiceChatMode,
-  ]);
+  const handleVoiceModeStartRecording = useCallback(() => {
+    handleVoiceInterruption();
+  }, [handleVoiceInterruption]);
 
   const handleVoicePlaybackEnded = useCallback(() => {
-    if (
-      !voiceChatMode ||
-      isMicListening ||
-      isSubmitting ||
-      isSubmittingAdded ||
-      disableInputs ||
-      isNotAppendable
-    ) {
+    if (!isCallModeActive || isMicListening || isSubmitting || disableInputs || isNotAppendable) {
       return;
     }
 
@@ -268,21 +277,45 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     voiceRearmTimeoutRef.current = window.setTimeout(() => {
       voiceChatStartRecordingRef.current?.();
     }, VOICE_CHAT_REARM_DELAY_MS);
-  }, [
-    disableInputs,
-    isMicListening,
-    isNotAppendable,
-    isSubmitting,
-    isSubmittingAdded,
-    voiceChatMode,
-  ]);
+  }, [disableInputs, isMicListening, isNotAppendable, isSubmitting, isCallModeActive]);
 
   const handleToggleVoiceChatMode = useCallback(() => {
+    if (!canUseVoiceMode) {
+      return;
+    }
     setVoiceChatMode((prev) => !prev);
-  }, [setVoiceChatMode]);
+  }, [canUseVoiceMode, setVoiceChatMode]);
+
+  const voiceCallStatus = useMemo(() => {
+    if (isMicListening) {
+      return 'listening' as const;
+    }
+    if (isSubmitting && showStopButton) {
+      return 'processing' as const;
+    }
+    if (globalAudioPlaying) {
+      return 'speaking' as const;
+    }
+    return 'idle' as const;
+  }, [isMicListening, isSubmitting, showStopButton, globalAudioPlaying]);
 
   useEffect(() => {
-    if (!voiceChatMode) {
+    if (!isCallModeActive) {
+      return;
+    }
+    setVoiceCallStatus(voiceCallStatus);
+  }, [isCallModeActive, voiceCallStatus, setVoiceCallStatus]);
+
+  useEffect(() => {
+    if (isCallModeActive) {
+      setVoiceCallInterimTranscript(interimTranscript);
+    } else {
+      setVoiceCallInterimTranscript('');
+    }
+  }, [isCallModeActive, interimTranscript, setVoiceCallInterimTranscript]);
+
+  useEffect(() => {
+    if (!isCallModeActive) {
       return;
     }
 
@@ -303,7 +336,7 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
       setAutoTranscribeAudio(true);
     }
     if (autoSendText === -1) {
-      setAutoSendText(VOICE_CHAT_AUTO_SEND_SECONDS);
+      setAutoSendText(VOICE_CHAT_CALL_AUTO_SEND_SECONDS);
     }
     if (decibelValue !== VOICE_CHAT_DECIBEL_VALUE) {
       setDecibelValue(VOICE_CHAT_DECIBEL_VALUE);
@@ -322,11 +355,11 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     setAutomaticPlayback,
     setConversationMode,
     setDecibelValue,
-    voiceChatMode,
+    isCallModeActive,
   ]);
 
   useEffect(() => {
-    if (voiceChatMode || previousVoiceSettingsRef.current == null) {
+    if (isCallModeActive || previousVoiceSettingsRef.current == null) {
       return;
     }
 
@@ -343,28 +376,55 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     setAutomaticPlayback,
     setConversationMode,
     setDecibelValue,
-    voiceChatMode,
+    isCallModeActive,
   ]);
 
   useEffect(() => {
-    if (voiceChatMode && !isVoiceChatAvailable) {
+    if (voiceChatMode && !canUseVoiceMode) {
       setVoiceChatMode(false);
     }
-  }, [isVoiceChatAvailable, setVoiceChatMode, voiceChatMode]);
+  }, [canUseVoiceMode, setVoiceChatMode, voiceChatMode]);
 
   useEffect(() => {
-    if (voiceChatMode) {
+    if (isRealtimeMode || !voiceChatMode || !canUseVoiceMode || isMicListening || isSubmitting) {
+      return;
+    }
+
+    if (voiceRearmTimeoutRef.current != null) {
+      window.clearTimeout(voiceRearmTimeoutRef.current);
+    }
+
+    voiceRearmTimeoutRef.current = window.setTimeout(() => {
+      voiceChatStartRecordingRef.current?.();
+    }, 250);
+  }, [canUseVoiceMode, isMicListening, isSubmitting, voiceChatMode, isRealtimeMode]);
+
+  useEffect(() => {
+    if (isCallModeActive) {
       voiceSessionStartRef.current = Date.now();
       setVoiceEndedDuration(null);
       return;
     }
 
     if (voiceSessionStartRef.current != null) {
-      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - voiceSessionStartRef.current) / 1000));
+      const elapsedSeconds = Math.max(
+        1,
+        Math.floor((Date.now() - voiceSessionStartRef.current) / 1000),
+      );
       setVoiceEndedDuration(elapsedSeconds);
       voiceSessionStartRef.current = null;
     }
-  }, [voiceChatMode]);
+  }, [isCallModeActive]);
+
+  const handleSubmitMessage = useCallback(
+    (data: { text: string }) => {
+      if (isCallModeActive) {
+        return;
+      }
+      submitMessage(data);
+    },
+    [isCallModeActive, submitMessage],
+  );
 
   useEffect(() => {
     if (voiceEndedDuration == null) {
@@ -377,6 +437,88 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
 
     return () => window.clearTimeout(timeout);
   }, [voiceEndedDuration]);
+
+  useEffect(() => {
+    if (!isCallModeActive) {
+      setInterimTranscript('');
+    }
+  }, [isCallModeActive]);
+
+  /*
+   * Two separate pipelines — no shared audio or text:
+   * 1. User: mic → STT (AudioRecorder) → transcript text → submitMessage. Uses: voiceCallInterimTranscript, form text.
+   * 2. Agent: latestMessage → TTS (StreamAudio) → playback + message display. Uses: globalAudioURL, globalAudioPlaying.
+   * Cross-pipeline control only: barge-in (user volume → pause TTS), onEnded (TTS done → re-arm mic). No data shared.
+   */
+  useEffect(() => {
+    if (globalAudioPlaying) {
+      suppressTranscriptRef.current = true;
+      return;
+    }
+    suppressTranscriptRef.current = true;
+    const t = window.setTimeout(() => {
+      suppressTranscriptRef.current = false;
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [globalAudioPlaying]);
+
+  const bargeInStreamRef = useRef<MediaStream | null>(null);
+  const bargeInContextRef = useRef<AudioContext | null>(null);
+  const bargeInRafRef = useRef<number | null>(null);
+  const BARGE_IN_VOLUME_THRESHOLD = 25;
+
+  useEffect(() => {
+    if (!isCallModeActive || !globalAudioPlaying) {
+      return;
+    }
+
+    let cancelled = false;
+    const streamPromise = navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .catch(() => null);
+
+    streamPromise.then((stream) => {
+      if (cancelled || !stream) {
+        return;
+      }
+      bargeInStreamRef.current = stream;
+      const ctx = new AudioContext();
+      bargeInContextRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.4;
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const checkVolume = () => {
+        if (cancelled) {
+          return;
+        }
+        analyser.getByteFrequencyData(dataArray);
+        const sum = dataArray.reduce((a, b) => a + b, 0);
+        const avg = sum / dataArray.length;
+        if (avg > BARGE_IN_VOLUME_THRESHOLD) {
+          handleVoiceInterruption();
+          return;
+        }
+        bargeInRafRef.current = requestAnimationFrame(checkVolume);
+      };
+      bargeInRafRef.current = requestAnimationFrame(checkVolume);
+    });
+
+    return () => {
+      cancelled = true;
+      if (bargeInRafRef.current != null) {
+        cancelAnimationFrame(bargeInRafRef.current);
+        bargeInRafRef.current = null;
+      }
+      bargeInStreamRef.current?.getTracks().forEach((t) => t.stop());
+      bargeInStreamRef.current = null;
+      bargeInContextRef.current?.close();
+      bargeInContextRef.current = null;
+    };
+  }, [isCallModeActive, globalAudioPlaying, handleVoiceInterruption]);
 
   useEffect(() => {
     return () => {
@@ -396,9 +538,57 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
     [isCollapsed, isMoreThanThreeRows],
   );
 
+  if (isRealtimeCallActive) {
+    return <RealtimeVoiceCall onEndCall={() => setVoiceChatMode(false)} />;
+  }
+
+  if (isCallModeActive) {
+    return (
+      <form
+        onSubmit={methods.handleSubmit(handleSubmitMessage)}
+        className="relative w-full min-h-0"
+        aria-label={localize('com_ui_voice_chat_mode')}
+      >
+        <textarea
+          ref={(e) => {
+            (textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = e;
+          }}
+          className="sr-only"
+          aria-hidden
+          tabIndex={-1}
+        />
+        <VoiceModeFloatingBar status={voiceCallStatus} onEndCall={handleToggleVoiceChatMode}>
+          {SpeechToText && (
+            <AudioRecorder
+              methods={methods}
+              ask={submitMessage}
+              textAreaRef={textAreaRef}
+              disabled={disableInputs || isNotAppendable}
+              isSubmitting={isSubmitting}
+              onStartRecording={handleVoiceModeStartRecording}
+              onSpeechDetected={handleVoiceInterruption}
+              onListeningChange={setIsMicListening}
+              onInterimTranscriptChange={setInterimTranscript}
+              onSTTSourceChange={setSttSource}
+              preferExternalSTT
+              suppressTranscriptRef={suppressTranscriptRef}
+              pauseListening={globalAudioPlaying}
+              registerStartRecording={(startRecording) => {
+                voiceChatStartRecordingRef.current = startRecording;
+              }}
+            />
+          )}
+        </VoiceModeFloatingBar>
+        {shouldAutoplayAudio && (
+          <StreamAudio index={index} onEnded={handleVoicePlaybackEnded} />
+        )}
+      </form>
+    );
+  }
+
   return (
     <form
-      onSubmit={methods.handleSubmit(submitMessage)}
+      onSubmit={methods.handleSubmit(handleSubmitMessage)}
       className={cn(
         'mx-auto flex w-full flex-row gap-3 transition-[max-width] duration-300 sm:px-2',
         maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
@@ -439,7 +629,7 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
               isTextAreaFocused ? 'shadow-lg' : 'shadow-md',
               isTemporary
                 ? 'border-violet-800/60 bg-violet-950/10'
-                : voiceChatMode
+                : isCallModeActive
                   ? 'border-emerald-800/60 bg-emerald-950/10'
                   : 'border-border-light bg-surface-chat',
             )}
@@ -459,7 +649,9 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                   <AudioLines className="h-4 w-4" aria-hidden="true" />
                   <div className="flex items-center gap-2">
                     <span>{localize('com_ui_voice_chat_ended')}</span>
-                    <span className="text-text-secondary">{formatVoiceDuration(voiceEndedDuration)}</span>
+                    <span className="text-text-secondary">
+                      {formatVoiceDuration(voiceEndedDuration)}
+                    </span>
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
@@ -488,6 +680,25 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                 </div>
               </div>
             )}
+            {isCallModeActive && (
+              <div className="mx-3 mt-2 rounded-xl border border-emerald-800/40 bg-emerald-950/20 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-emerald-200">
+                    {localize('com_ui_voice_call_listening')}
+                  </span>
+                  <span className="text-xs text-text-secondary">
+                    {localize(
+                      sttSource === 'external'
+                        ? 'com_ui_voice_stt_source_external'
+                        : 'com_ui_voice_stt_source_browser',
+                    )}
+                  </span>
+                </div>
+                {interimTranscript.trim().length > 0 && (
+                  <div className="mt-2 text-text-primary">{interimTranscript}</div>
+                )}
+              </div>
+            )}
             {endpoint && (
               <div className={cn('flex', isRTL ? 'flex-row-reverse' : 'flex-row')}>
                 <div
@@ -508,7 +719,7 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                       (textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current =
                         e;
                     }}
-                    disabled={disableInputs || isNotAppendable}
+                    disabled={disableInputs || isNotAppendable || isCallModeActive}
                     onPaste={handlePaste}
                     onKeyDown={handleKeyDown}
                     onKeyUp={handleKeyUp}
@@ -544,58 +755,75 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
             )}
             <div
               className={cn(
-                '@container items-between flex gap-2 pb-2',
+                '@container items-between flex items-center gap-2 pb-2',
                 isRTL ? 'flex-row-reverse' : 'flex-row',
               )}
             >
               <div className={`${isRTL ? 'mr-2' : 'ml-2'}`}>
                 <AttachFileChat conversation={conversation} disableInputs={disableInputs} />
               </div>
-              <BadgeRow
-                showEphemeralBadges={
-                  !!endpoint && !isAgentsEndpoint(endpoint) && !isAssistantsEndpoint(endpoint)
-                }
-                isSubmitting={isSubmitting}
-                conversationId={conversationId}
-                onChange={setBadges}
-                isInChat={
-                  Array.isArray(conversation?.messages) && conversation.messages.length >= 1
-                }
-              />
-              <div className="mx-auto flex" />
-              {SpeechToText && (
-                <AudioRecorder
-                  methods={methods}
-                  ask={submitMessage}
-                  textAreaRef={textAreaRef}
-                  disabled={disableInputs || isNotAppendable}
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <BadgeRow
+                  showEphemeralBadges={
+                    !!endpoint && !isAgentsEndpoint(endpoint) && !isAssistantsEndpoint(endpoint)
+                  }
                   isSubmitting={isSubmitting}
-                  onStartRecording={handleVoiceModeStartRecording}
-                  onListeningChange={setIsMicListening}
-                  registerStartRecording={(startRecording) => {
-                    voiceChatStartRecordingRef.current = startRecording;
-                  }}
+                  conversationId={conversationId}
+                  onChange={setBadges}
+                  isInChat={
+                    Array.isArray(conversation?.messages) && conversation.messages.length >= 1
+                  }
                 />
-              )}
-              <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
-                {isSubmitting && showStopButton ? (
-                  <StopButton stop={handleStopGenerating} setShowStopButton={setShowStopButton} />
-                ) : (
-                  endpoint && (
-                    <SendButton
-                      ref={submitButtonRef}
-                      control={methods.control}
-                      disabled={filesLoading || isSubmitting || disableInputs || isNotAppendable}
-                    />
-                  )
-                )}
               </div>
-              <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
+              <div className={cn('flex shrink-0 items-center gap-2', isRTL ? 'ml-2' : 'mr-2')}>
+                {SpeechToText && (
+                  <AudioRecorder
+                    methods={methods}
+                    ask={submitMessage}
+                    textAreaRef={textAreaRef}
+                    disabled={disableInputs || isNotAppendable}
+                    isSubmitting={isSubmitting}
+                    onStartRecording={handleVoiceModeStartRecording}
+                    onSpeechDetected={handleVoiceInterruption}
+                    onListeningChange={setIsMicListening}
+                    onInterimTranscriptChange={setInterimTranscript}
+                    onSTTSourceChange={setSttSource}
+                    preferExternalSTT={isCallModeActive}
+                    suppressTranscriptRef={suppressTranscriptRef}
+                    pauseListening={isCallModeActive && globalAudioPlaying}
+                    registerStartRecording={(startRecording) => {
+                      voiceChatStartRecordingRef.current = startRecording;
+                    }}
+                  />
+                )}
+                <div>
+                  {isSubmitting && showStopButton ? (
+                    <StopButton stop={handleStopGenerating} setShowStopButton={setShowStopButton} />
+                  ) : (
+                    endpoint && (
+                      <SendButton
+                        ref={submitButtonRef}
+                        control={methods.control}
+                        disabled={
+                          filesLoading ||
+                          isSubmitting ||
+                          disableInputs ||
+                          isNotAppendable ||
+                          isCallModeActive
+                        }
+                      />
+                    )
+                  )}
+                </div>
                 <TooltipAnchor
                   description={
-                    isVoiceChatAvailable
-                      ? localize('com_ui_voice_chat_mode')
-                      : localize('com_ui_voice_chat_mode_unavailable')
+                    !canUseVoiceMode
+                      ? isRealtimeMode
+                        ? localize('com_ui_voice_mode_realtime_unavailable')
+                        : localize('com_ui_voice_chat_mode_unavailable')
+                      : isVoiceModeBlocked
+                        ? localize('com_endpoint_config_placeholder')
+                        : localize('com_ui_voice_chat_mode')
                   }
                   render={
                     <button
@@ -604,13 +832,13 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                       aria-label={localize('com_ui_voice_chat_mode')}
                       aria-pressed={voiceChatMode}
                       onClick={handleToggleVoiceChatMode}
-                      disabled={!isVoiceChatAvailable}
+                      disabled={!canUseVoiceMode}
                       className={cn(
                         'flex size-10 items-center justify-center rounded-full border transition-all',
-                        voiceChatMode
+                        (isCallModeActive || isRealtimeCallActive)
                           ? 'border-transparent bg-white text-black shadow-md dark:bg-white dark:text-black'
                           : 'border-border-light bg-transparent text-text-secondary hover:bg-surface-hover',
-                        !isVoiceChatAvailable && 'cursor-not-allowed opacity-60',
+                        !canUseVoiceMode && 'cursor-not-allowed opacity-60',
                       )}
                     >
                       <AudioLines className="h-5 w-5" aria-hidden="true" />
@@ -619,7 +847,9 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                 />
               </div>
             </div>
-            {shouldAutoplayAudio && <StreamAudio index={index} onEnded={handleVoicePlaybackEnded} />}
+            {shouldAutoplayAudio && (
+              <StreamAudio index={index} onEnded={handleVoicePlaybackEnded} />
+            )}
           </div>
         </div>
       </div>

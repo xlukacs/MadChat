@@ -118,6 +118,7 @@ const useSpeechToTextBrowser = (
     isLoading: false,
     startRecording: toggleListening,
     stopRecording: toggleListening,
+    isSupported: browserSupportsSpeechRecognition,
   };
 };
 

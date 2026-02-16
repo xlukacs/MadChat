@@ -16,7 +16,6 @@ import useGetSender from '~/hooks/Conversations/useGetSender';
 import useFileHandling from '~/hooks/Files/useFileHandling';
 import { useInteractionHealthCheck } from '~/data-provider';
 import { useChatContext } from '~/Providers/ChatContext';
-import { globalAudioId } from '~/common';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -178,11 +177,6 @@ export default function useTextarea({
       }
 
       if ((isNonShiftEnter || isCtrlEnter) && !isComposingInput) {
-        const globalAudio = document.getElementById(globalAudioId) as HTMLAudioElement | undefined;
-        if (globalAudio) {
-          console.log('Unmuting global audio');
-          globalAudio.muted = false;
-        }
         submitButtonRef.current?.click();
       }
     },

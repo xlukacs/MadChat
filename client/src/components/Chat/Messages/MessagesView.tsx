@@ -18,6 +18,8 @@ function MessagesViewContent({
 }) {
   const localize = useLocalize();
   const fontSize = useAtomValue(fontSizeAtom);
+  const voiceChatMode = useRecoilValue(store.voiceChatMode);
+  const voiceCallInterimTranscript = useRecoilValue(store.voiceCallInterimTranscript);
   const { screenshotTargetRef } = useScreenshot();
   const scrollButtonPreference = useRecoilValue(store.showScrollButton);
   const [currentEditId, setCurrentEditId] = useState<number | string | null>(-1);
@@ -33,6 +35,7 @@ function MessagesViewContent({
   } = useMessageScrolling(_messagesTree);
 
   const { conversationId } = conversation ?? {};
+  const showLiveTranscript = voiceChatMode && voiceCallInterimTranscript.trim().length > 0;
 
   return (
     <>
@@ -48,7 +51,12 @@ function MessagesViewContent({
               width: '100%',
             }}
           >
-            <div className="flex flex-col pb-9 pt-14 dark:bg-transparent">
+            <div
+              className={cn(
+                'flex flex-col pb-9 pt-14 dark:bg-transparent',
+                voiceChatMode && 'mx-auto max-w-2xl px-4 pb-28',
+              )}
+            >
               {(_messagesTree && _messagesTree.length == 0) || _messagesTree === null ? (
                 <div
                   className={cn(
@@ -78,6 +86,30 @@ function MessagesViewContent({
               />
             </div>
           </div>
+
+          {showLiveTranscript && (
+            <div
+              className="absolute bottom-24 left-1/2 z-40 w-full max-w-xl -translate-x-1/2 px-4 animate-in fade-in duration-200"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="scrollbar-gutter-stable max-h-[40vh] overflow-y-auto rounded-2xl border border-emerald-800/40 bg-emerald-950/90 px-4 py-3 shadow-lg backdrop-blur-sm">
+                <p className="whitespace-pre-wrap break-words text-sm text-emerald-100">
+                  {voiceCallInterimTranscript}
+                </p>
+                <div className="mt-2 flex gap-1">
+                  {[1, 2, 3].map((i) => (
+                    <span
+                      key={i}
+                      className="h-1 w-1 animate-pulse rounded-full bg-emerald-400"
+                      style={{ animationDelay: `${i * 150}ms` }}
+                      aria-hidden
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <CSSTransition
             in={showScrollButton && scrollButtonPreference}

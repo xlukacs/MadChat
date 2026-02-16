@@ -491,6 +491,15 @@ const sttSchema = z.object({
   azureOpenAI: sttAzureOpenAISchema.optional(),
 });
 
+const realtimeSchema = z.object({
+  enabled: z.boolean().optional(),
+  url: z.string().optional(),
+  apiKey: z.string().optional(),
+  model: z.string().optional(),
+  voice: z.string().optional(),
+  instructions: z.string().optional(),
+});
+
 const speechTab = z
   .object({
     conversationMode: z.boolean().optional(),
@@ -988,6 +997,7 @@ export const configSchema = z.object({
     .object({
       tts: ttsSchema.optional(),
       stt: sttSchema.optional(),
+      realtime: realtimeSchema.optional(),
       speechTab: speechTab.optional(),
     })
     .optional(),

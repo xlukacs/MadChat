@@ -3,10 +3,34 @@ import { MicOff } from 'lucide-react';
 import { useToastContext, TooltipAnchor, ListeningIcon, Spinner } from '@librechat/client';
 import { useLocalize, useSpeechToText, useGetAudioSettings } from '~/hooks';
 import { useChatFormContext } from '~/Providers';
-import { globalAudioId } from '~/common';
 import { cn } from '~/utils';
 
+/**
+ * USER VOICE PIPELINE ONLY.
+ * This component handles: microphone → STT → user message text.
+ * It must not read or write agent TTS state (globalAudio, playback, etc.).
+ * Agent pipeline (StreamAudio, TTS, message display) is separate.
+ */
+
 const isExternalSTT = (speechToTextEndpoint: string) => speechToTextEndpoint === 'external';
+
+/** Phrases often misheard from TTS playback - do not submit as user message */
+const ECHO_BLOCKLIST = new Set([
+  '.',
+  '..',
+  '...',
+  'thank you',
+  'thanks',
+  'ok',
+  'okay',
+  'bye',
+  'yes',
+  'no',
+  'uh',
+  'um',
+  'hmm',
+]);
+
 export default function AudioRecorder({
   disabled,
   ask,
@@ -14,8 +38,14 @@ export default function AudioRecorder({
   textAreaRef,
   isSubmitting,
   onStartRecording,
+  onSpeechDetected,
   registerStartRecording,
   onListeningChange,
+  onInterimTranscriptChange,
+  onSTTSourceChange,
+  preferExternalSTT,
+  suppressTranscriptRef,
+  pauseListening,
 }: {
   disabled: boolean;
   ask: (data: { text: string }) => void;
@@ -23,8 +53,16 @@ export default function AudioRecorder({
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   isSubmitting: boolean;
   onStartRecording?: () => void;
+  onSpeechDetected?: () => void;
   registerStartRecording?: (startRecording: () => void) => void;
   onListeningChange?: (isListening: boolean) => void;
+  onInterimTranscriptChange?: (text: string) => void;
+  onSTTSourceChange?: (source: 'external' | 'browser') => void;
+  preferExternalSTT?: boolean;
+  /** When true, do not submit transcriptions (avoids TTS echo being sent as user message) */
+  suppressTranscriptRef?: React.RefObject<boolean>;
+  /** When true, stop recognition so no audio is sent to STT (avoids TTS echo in pipeline). Barge-in handled separately. */
+  pauseListening?: boolean;
 }) {
   const { setValue, reset, getValues } = methods;
   const localize = useLocalize();
@@ -32,6 +70,7 @@ export default function AudioRecorder({
   const { speechToTextEndpoint } = useGetAudioSettings();
 
   const existingTextRef = useRef<string>('');
+  const hasDetectedSpeechRef = useRef(false);
 
   const onTranscriptionComplete = useCallback(
     (text: string) => {
@@ -42,23 +81,42 @@ export default function AudioRecorder({
         });
         return;
       }
+      if (suppressTranscriptRef?.current) {
+        return;
+      }
       if (text) {
-        const globalAudio = document.getElementById(globalAudioId) as HTMLAudioElement | null;
-        if (globalAudio) {
-          console.log('Unmuting global audio');
-          globalAudio.muted = false;
-        }
         /** For external STT, append existing text to the transcription */
         const finalText =
           isExternalSTT(speechToTextEndpoint) && existingTextRef.current
-            ? `${existingTextRef.current} ${text}`
-            : text;
+            ? `${existingTextRef.current} ${text}`.trim()
+            : text.trim();
+        if (!finalText) {
+          return;
+        }
+        const normalized = finalText.toLowerCase();
+        if (
+          ECHO_BLOCKLIST.has(normalized) ||
+          (finalText.length <= 2 && /^[.\s,!?]+$/.test(finalText))
+        ) {
+          return;
+        }
+        onInterimTranscriptChange?.('');
+        hasDetectedSpeechRef.current = false;
         ask({ text: finalText });
         reset({ text: '' });
         existingTextRef.current = '';
       }
     },
-    [ask, reset, showToast, localize, isSubmitting, speechToTextEndpoint],
+    [
+      ask,
+      reset,
+      showToast,
+      localize,
+      isSubmitting,
+      speechToTextEndpoint,
+      onInterimTranscriptChange,
+      suppressTranscriptRef,
+    ],
   );
 
   const setText = useCallback(
@@ -71,21 +129,23 @@ export default function AudioRecorder({
         /** For browser STT, the transcript is cumulative, so we only need to prepend the existing text once */
         newText = existingTextRef.current ? `${existingTextRef.current} ${text}` : text;
       }
+      onInterimTranscriptChange?.(newText);
+      if (newText.trim().length > 0 && !hasDetectedSpeechRef.current) {
+        hasDetectedSpeechRef.current = true;
+        onSpeechDetected?.();
+      }
       setValue('text', newText, {
         shouldValidate: true,
       });
     },
-    [setValue, speechToTextEndpoint],
+    [setValue, speechToTextEndpoint, onInterimTranscriptChange, onSpeechDetected],
   );
 
-  const { isListening, isLoading, startRecording, stopRecording } = useSpeechToText(
+  const { isListening, isLoading, startRecording, stopRecording, activeSource } = useSpeechToText(
     setText,
     onTranscriptionComplete,
+    { preferExternal: preferExternalSTT },
   );
-
-  if (!textAreaRef.current) {
-    return null;
-  }
 
   const handleStartRecording = useCallback(() => {
     onStartRecording?.();
@@ -104,6 +164,17 @@ export default function AudioRecorder({
   useEffect(() => {
     onListeningChange?.(isListening === true);
   }, [isListening, onListeningChange]);
+
+  useEffect(() => {
+    onSTTSourceChange?.(activeSource);
+  }, [activeSource, onSTTSourceChange]);
+
+  useEffect(() => {
+    if (!pauseListening) {
+      return;
+    }
+    stopRecording();
+  }, [pauseListening, stopRecording]);
 
   useEffect(() => {
     if (registerStartRecording == null) {
@@ -126,6 +197,10 @@ export default function AudioRecorder({
     }
     return <ListeningIcon className="stroke-text-secondary" />;
   };
+
+  if (!textAreaRef.current) {
+    return null;
+  }
 
   return (
     <TooltipAnchor

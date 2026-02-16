@@ -27,9 +27,17 @@ async function getCustomConfigSpeech(req, res) {
 
     const sttExternal = !!appConfig.speech?.stt;
     const ttsExternal = !!appConfig.speech?.tts;
+    const realtimeConfig = appConfig.speech?.realtime;
+    const realtimeEnabled = Boolean(
+      realtimeConfig?.enabled &&
+        (realtimeConfig?.apiKey || process.env.OPENAI_API_KEY || appConfig.speech?.tts?.openai?.apiKey),
+    );
     let settings = {
       sttExternal,
       ttsExternal,
+      realtimeEnabled,
+      realtimeModel: realtimeConfig?.model,
+      realtimeVoice: realtimeConfig?.voice,
     };
 
     if (!appConfig.speech?.speechTab) {

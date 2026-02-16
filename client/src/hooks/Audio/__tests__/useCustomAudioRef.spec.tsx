@@ -14,6 +14,10 @@ function TestHarness({
 }
 
 describe('useCustomAudioRef', () => {
+  beforeEach(() => {
+    URL.revokeObjectURL = jest.fn();
+  });
+
   test('calls onEnded once per playback cycle', () => {
     const setIsPlaying = jest.fn();
     const onEnded = jest.fn();
@@ -22,6 +26,7 @@ describe('useCustomAudioRef', () => {
     const audio = screen.getByTestId('voice-audio');
 
     fireEvent(audio, new Event('play'));
+    fireEvent(audio, new Event('pause'));
     fireEvent(audio, new Event('ended'));
     fireEvent(audio, new Event('ended'));
 
