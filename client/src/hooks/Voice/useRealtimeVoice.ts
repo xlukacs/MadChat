@@ -26,6 +26,8 @@ type UseRealtimeVoiceOptions = {
   instructions?: string;
   onTranscriptDelta?: (text: string) => void;
   onAgentTranscript?: (text: string) => void;
+  onUserTurnComplete?: (text: string) => void;
+  onAgentTurnComplete?: (text: string) => void;
   onInterrupted?: () => void;
   onEnded?: () => void;
   onError?: (message: string) => void;
@@ -52,6 +54,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const optionsRef = useRef(options);
+  const agentTranscriptRef = useRef('');
 
   useEffect(() => {
     optionsRef.current = options;
@@ -124,6 +127,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       ) {
         const delta = String(event.delta ?? '');
         if (delta.length > 0) {
+          agentTranscriptRef.current = `${agentTranscriptRef.current}${delta}`;
           setAgentTranscript((prev) => {
             const next = `${prev}${delta}`;
             optionsRef.current.onAgentTranscript?.(next);
@@ -148,6 +152,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         if (text.length > 0) {
           setUserTranscript(text);
           optionsRef.current.onTranscriptDelta?.(text);
+          optionsRef.current.onUserTurnComplete?.(text);
         }
       }
 
@@ -157,7 +162,23 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         event.truncated === true
       ) {
         setStatus('interrupted');
+        setAgentTranscript('');
+        agentTranscriptRef.current = '';
         optionsRef.current.onInterrupted?.();
+      }
+
+      if (
+        type === 'response.audio_transcript.done' ||
+        type === 'response.output_audio_transcript.done'
+      ) {
+        if (event.truncated !== true) {
+          const completedTranscript = agentTranscriptRef.current.trim();
+          if (completedTranscript.length > 0) {
+            optionsRef.current.onAgentTurnComplete?.(completedTranscript);
+          }
+          setAgentTranscript('');
+          agentTranscriptRef.current = '';
+        }
       }
     },
     [],
@@ -177,6 +198,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
     setStatus('connecting');
     setUserTranscript('');
     setAgentTranscript('');
+    agentTranscriptRef.current = '';
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({

@@ -1,6 +1,6 @@
 ---
 name: OpenAI Realtime Voice Mode
-overview: Add a new voice call mode powered by the OpenAI Realtime API with WebRTC bidirectional audio, while keeping the existing STT/TTS pipeline as a fallback. Realtime sessions will be ephemeral (no conversation persistence).
+overview: Add a new voice call mode powered by the OpenAI Realtime API with WebRTC bidirectional audio, while keeping the existing STT/TTS pipeline as a fallback. Realtime sessions support transcription display and message persistence.
 todos: []
 isProject: false
 ---
@@ -143,5 +143,5 @@ Create [client/src/components/Chat/Input/RealtimeVoiceCall.tsx](client/src/compo
 ## Preserved Behavior
 
 - **Legacy mode**: All current behavior (STT, TTS, barge-in, floating bar, live transcript) unchanged.
-- **Realtime mode**: ChatGPT-like voice UX with native interruption, lower latency, single WebRTC pipe. Ephemeral — no conversation persistence.
+- **Realtime mode**: ChatGPT-like voice UX with native interruption, lower latency, single WebRTC pipe, with transcript display and persistence support.
 

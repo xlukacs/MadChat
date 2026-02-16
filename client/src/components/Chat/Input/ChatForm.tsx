@@ -4,7 +4,7 @@ import { TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { AudioLines, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TMessage } from 'librechat-data-provider';
 import { useGetCustomConfigSpeechQuery } from 'librechat-data-provider/react-query';
 import type { ExtendedFile, FileSetter, ConvoGenerator } from '~/common';
 import {
@@ -54,6 +54,9 @@ interface ChatFormProps {
   isSubmitting: boolean;
   filesLoading: boolean;
   setFilesLoading: React.Dispatch<React.SetStateAction<boolean>>;
+  setConversation: (conversation: TConversation | null) => void;
+  getMessages: () => TMessage[] | undefined;
+  setMessages: (messages: TMessage[]) => void;
   newConversation: ConvoGenerator;
   handleStopGenerating: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
@@ -66,6 +69,9 @@ const ChatForm = memo(function ChatForm({
   isSubmitting,
   filesLoading,
   setFilesLoading,
+  setConversation,
+  getMessages,
+  setMessages,
   newConversation,
   handleStopGenerating,
 }: ChatFormProps) {
@@ -569,7 +575,15 @@ const ChatForm = memo(function ChatForm({
   );
 
   if (isRealtimeCallActive) {
-    return <RealtimeVoiceCall onEndCall={() => setVoiceChatMode(false)} />;
+    return (
+      <RealtimeVoiceCall
+        onEndCall={() => setVoiceChatMode(false)}
+        conversation={conversation}
+        setConversation={setConversation}
+        getMessages={getMessages}
+        setMessages={setMessages}
+      />
+    );
   }
 
   if (isCallModeActive) {
@@ -916,6 +930,9 @@ function ChatFormWrapper({ index = 0 }: { index?: number }) {
     isSubmitting,
     filesLoading,
     setFilesLoading,
+    setConversation,
+    getMessages,
+    setMessages,
     newConversation,
     handleStopGenerating,
   } = useChatContext();
@@ -966,6 +983,9 @@ function ChatFormWrapper({ index = 0 }: { index?: number }) {
       isSubmitting={isSubmitting}
       filesLoading={filesLoading}
       setFilesLoading={setFilesLoading}
+      setConversation={setConversation}
+      getMessages={getMessages}
+      setMessages={setMessages}
       newConversation={stableNewConversation}
       handleStopGenerating={stableHandleStop}
     />
