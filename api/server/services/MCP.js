@@ -29,9 +29,14 @@ const {
   getFlowStateManager,
   getMCPManager,
 } = require('~/config');
-const { findToken, createToken, updateToken, deleteTokens } = require('~/models');
-const { getMessages } = require('~/models/Message');
-const { findFileById } = require('~/models/File');
+const {
+  findToken,
+  createToken,
+  updateToken,
+  deleteTokens,
+  getMessages,
+  getFiles,
+} = require('~/models');
 const { getGraphApiToken } = require('./GraphTokenService');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
@@ -470,7 +475,6 @@ const extractImageUrlsFromConversation = async (conversationId) => {
     const messageIds = messages.map((msg) => msg.messageId);
 
     // Query File collection for image attachments
-    const { getFiles } = require('~/models/File');
     const fileAttachments = await getFiles(
       { messageId: { $in: messageIds }, type: { $regex: /^image\//i } },
       { updatedAt: -1 }, // Sort by most recent first
@@ -1107,7 +1111,6 @@ function createToolInstance({
 
           // Get the original local filepath from the database (not the converted URL)
           // We need to pass the local path to uploadToS3ForExternalAccess
-          const { getFiles } = require('~/models/File');
           const requestBody = config?.configurable?.requestBody;
           const conversationId = requestBody?.conversationId;
 

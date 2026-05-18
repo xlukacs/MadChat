@@ -3,8 +3,7 @@ const { z } = require('zod');
 const { Tool } = require('@langchain/core/tools');
 const { logger } = require('@librechat/data-schemas');
 const { PermissionBits, ResourceType } = require('librechat-data-provider');
-const { getAgents } = require('~/models/Agent');
-const { getFiles } = require('~/models');
+const { getAgents, getFiles } = require('~/models');
 const {
   findAccessibleResources,
   findPubliclyAccessibleResources,
