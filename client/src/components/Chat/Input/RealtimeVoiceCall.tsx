@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { Constants, apiBaseUrl, request } from 'librechat-data-provider';
+import { Constants, ContentTypes, apiBaseUrl, request } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import { AlertTriangle, Radio } from 'lucide-react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
@@ -12,6 +12,15 @@ import {
   useSaveRealtimeMessage,
   type RealtimeFunctionTool,
 } from '~/hooks';
+import {
+  appendAssistantTextToMessage,
+  appendToolCallToMessage,
+  buildMcpToolDisplayName,
+  buildToolCallContentPart,
+  createAssistantTurnMessage,
+  updateToolCallInMessage,
+  type RealtimeToolMapEntry,
+} from '~/hooks/Voice/realtimeToolMessage';
 import type { VoiceCallStatus } from '~/store/voiceChat';
 import VoiceModeFloatingBar from './VoiceModeFloatingBar';
 import store from '~/store';
@@ -54,7 +63,7 @@ function RealtimeVoiceCall({
   const voice = useRecoilValue(store.voice);
   const setVoiceCallStatus = useSetRecoilState(store.voiceCallStatus);
   const setVoiceCallInterimTranscript = useSetRecoilState(store.voiceCallInterimTranscript);
-  const setVoiceCallToolActivity = useSetRecoilState(store.voiceCallToolActivity);
+  const setVoiceCallActiveToolMessageId = useSetRecoilState(store.voiceCallActiveToolMessageId);
   const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
   const { data: speechConfig, isLoading: isSpeechConfigLoading } = useGetCustomConfigSpeechQuery({
     enabled: true,
@@ -65,7 +74,17 @@ function RealtimeVoiceCall({
   const backendConversationReadyRef = useRef<string | null>(null);
   const lastSavedUserTextRef = useRef('');
   const lastSavedAgentTextRef = useRef('');
+  const currentTurnUserMessageIdRef = useRef<string | null>(null);
+  const userTurnCommittedRef = useRef(false);
+  const pendingUserTranscriptRef = useRef('');
+  const pendingUserSaveRef = useRef<Promise<void> | null>(null);
+  const resolveUserTurnReadyRef = useRef<(() => void) | null>(null);
+  const userTurnReadyPromiseRef = useRef<Promise<void> | null>(null);
+  const assistantTurnMessageIdRef = useRef<string | null>(null);
+  const assistantTurnMessageRef = useRef<TMessage | null>(null);
+  const toolCallMessageIdsRef = useRef<Map<string, string>>(new Map());
   const [tools, setTools] = useState<RealtimeFunctionTool[]>([]);
+  const [toolMap, setToolMap] = useState<Record<string, RealtimeToolMapEntry>>({});
   const [toolsReady, setToolsReady] = useState(false);
   const [activeToolLabel, setActiveToolLabel] = useState<string | null>(null);
 
@@ -106,9 +125,13 @@ function RealtimeVoiceCall({
           return;
         }
 
-        const data = (await response.json()) as { tools?: RealtimeFunctionTool[] };
+        const data = (await response.json()) as {
+          tools?: RealtimeFunctionTool[];
+          toolMap?: Record<string, RealtimeToolMapEntry>;
+        };
         if (!cancelled && Array.isArray(data.tools)) {
           setTools(data.tools);
+          setToolMap(data.toolMap ?? {});
           if (data.tools.length === 0) {
             console.warn('[RealtimeVoice] No MCP tools loaded — check speech.realtime.mcpServers and MCP server startup');
           } else {
@@ -179,12 +202,23 @@ function RealtimeVoiceCall({
           isCreatedByUser: message.isCreatedByUser,
           endpoint: message.endpoint ?? endpoint,
           model: message.model,
-          unfinished: false,
-          error: false,
+          unfinished: message.unfinished ?? false,
+          error: message.error ?? false,
+          content: message.content,
         },
       });
     },
     [endpoint, saveRealtimeMessage],
+  );
+
+  const updateMessageInView = useCallback(
+    (message: TMessage) => {
+      const existing = getMessages() ?? [];
+      setMessages(
+        existing.map((entry) => (entry.messageId === message.messageId ? message : entry)),
+      );
+    },
+    [getMessages, setMessages],
   );
 
   const upsertMessageToView = useCallback(
@@ -195,9 +229,12 @@ function RealtimeVoiceCall({
       }
 
       const lastMessage = existing[existing.length - 1];
+      const messageText = message.text ?? '';
       if (
+        !(message.content?.length ?? 0) &&
+        messageText.length > 0 &&
         lastMessage?.sender === message.sender &&
-        lastMessage?.text === message.text &&
+        lastMessage?.text === messageText &&
         lastMessage?.isCreatedByUser === message.isCreatedByUser
       ) {
         return;
@@ -208,15 +245,37 @@ function RealtimeVoiceCall({
     [getMessages, setMessages],
   );
 
-  const saveUserTurn = useCallback(
+  const commitUserTurn = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || trimmed === lastSavedUserTextRef.current) {
+      if (!trimmed) {
+        return;
+      }
+
+      if (userTurnCommittedRef.current && currentTurnUserMessageIdRef.current) {
+        if (trimmed === lastSavedUserTextRef.current) {
+          return;
+        }
+
+        const existing = (getMessages() ?? []).find(
+          (entry) => entry.messageId === currentTurnUserMessageIdRef.current,
+        );
+        if (existing) {
+          const updatedMessage: TMessage = { ...existing, text: trimmed };
+          lastSavedUserTextRef.current = trimmed;
+          updateMessageInView(updatedMessage);
+          await persistMessage(updatedMessage);
+        }
+        return;
+      }
+
+      if (trimmed === lastSavedUserTextRef.current && userTurnCommittedRef.current) {
         return;
       }
 
       lastSavedUserTextRef.current = trimmed;
       lastSavedAgentTextRef.current = '';
+
       const currentMessages = getMessages() ?? [];
       const parentMessageId =
         currentMessages[currentMessages.length - 1]?.messageId ?? Constants.NO_PARENT;
@@ -237,9 +296,13 @@ function RealtimeVoiceCall({
         clientTimestamp: new Date().toLocaleString('sv').replace(' ', 'T'),
       };
 
+      currentTurnUserMessageIdRef.current = userMessageId;
       pendingUserMessageIdRef.current = userMessageId;
+      userTurnCommittedRef.current = true;
       upsertMessageToView(userMessage);
       await persistMessage(userMessage);
+      resolveUserTurnReadyRef.current?.();
+      resolveUserTurnReadyRef.current = null;
     },
     [
       endpoint,
@@ -247,8 +310,162 @@ function RealtimeVoiceCall({
       getMessages,
       persistMessage,
       resolveConversationId,
+      updateMessageInView,
       upsertMessageToView,
     ],
+  );
+
+  const waitForUserTurnReady = useCallback(async () => {
+    if (userTurnCommittedRef.current) {
+      return;
+    }
+
+    const readyPromise = userTurnReadyPromiseRef.current;
+    if (!readyPromise) {
+      return;
+    }
+
+    await Promise.race([
+      readyPromise,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 4000);
+      }),
+    ]);
+  }, []);
+
+  const flushPendingUserTurn = useCallback(
+    async (text?: string) => {
+      const transcript = (text ?? pendingUserTranscriptRef.current).trim();
+      if (!transcript) {
+        if (pendingUserSaveRef.current) {
+          await pendingUserSaveRef.current;
+        }
+        return;
+      }
+
+      if (userTurnCommittedRef.current) {
+        await commitUserTurn(transcript);
+        return;
+      }
+
+      if (!pendingUserSaveRef.current) {
+        pendingUserSaveRef.current = commitUserTurn(transcript).finally(() => {
+          pendingUserSaveRef.current = null;
+        });
+      }
+
+      await pendingUserSaveRef.current;
+    },
+    [commitUserTurn],
+  );
+
+  const ensureAssistantTurnMessage = useCallback(async (): Promise<TMessage> => {
+    await flushPendingUserTurn();
+    await waitForUserTurnReady();
+    await flushPendingUserTurn();
+
+    const cachedMessage = assistantTurnMessageRef.current;
+    if (cachedMessage) {
+      const fromView = (getMessages() ?? []).find(
+        (entry) => entry.messageId === cachedMessage.messageId,
+      );
+      return fromView ?? cachedMessage;
+    }
+
+    const currentMessages = getMessages() ?? [];
+    const conversationId = resolveConversationId();
+    await ensureBackendConversation(conversationId);
+    const parentMessageId =
+      pendingUserMessageIdRef.current ??
+      currentMessages[currentMessages.length - 1]?.messageId ??
+      Constants.NO_PARENT;
+    const messageId = v4();
+    assistantTurnMessageIdRef.current = messageId;
+
+    const assistantMessage = createAssistantTurnMessage({
+      messageId,
+      conversationId,
+      parentMessageId,
+      endpoint,
+      model: realtimeModel,
+    });
+    assistantTurnMessageRef.current = assistantMessage;
+
+    upsertMessageToView(assistantMessage);
+    await persistMessage(assistantMessage);
+    return assistantMessage;
+  }, [
+    endpoint,
+    ensureBackendConversation,
+    flushPendingUserTurn,
+    getMessages,
+    persistMessage,
+    realtimeModel,
+    resolveConversationId,
+    upsertMessageToView,
+    waitForUserTurnReady,
+  ]);
+
+  const finalizeToolCallInMessage = useCallback(
+    async (
+      callId: string,
+      name: string,
+      args: Record<string, unknown>,
+      output: string,
+      progress: number,
+    ) => {
+      const messageId = toolCallMessageIdsRef.current.get(callId);
+      if (!messageId) {
+        return;
+      }
+
+      const currentMessages = getMessages() ?? [];
+      const existingMessage = currentMessages.find((entry) => entry.messageId === messageId);
+      if (!existingMessage) {
+        return;
+      }
+
+      const completedMessage = updateToolCallInMessage(existingMessage, callId, {
+        toolDisplayName: buildMcpToolDisplayName(name, toolMap),
+        args,
+        output,
+        progress,
+      });
+      assistantTurnMessageRef.current = completedMessage;
+      updateMessageInView(completedMessage);
+      await persistMessage(completedMessage);
+    },
+    [getMessages, persistMessage, toolMap, updateMessageInView],
+  );
+
+  const saveUserTurn = useCallback(
+    async (text: string) => {
+      pendingUserTranscriptRef.current = text;
+      await flushPendingUserTurn(text);
+    },
+    [flushPendingUserTurn],
+  );
+
+  const handleUserSpeechStarted = useCallback(() => {
+    pendingUserTranscriptRef.current = '';
+    userTurnCommittedRef.current = false;
+    currentTurnUserMessageIdRef.current = null;
+    pendingUserMessageIdRef.current = null;
+    assistantTurnMessageIdRef.current = null;
+    assistantTurnMessageRef.current = null;
+    userTurnReadyPromiseRef.current = new Promise<void>((resolve) => {
+      resolveUserTurnReadyRef.current = resolve;
+    });
+  }, []);
+
+  const handleUserSpeechStopped = useCallback(
+    (text: string) => {
+      pendingUserTranscriptRef.current = text;
+      void flushPendingUserTurn(text).catch((err) => {
+        console.error('Failed to persist user message on speech stop', err);
+      });
+    },
+    [flushPendingUserTurn],
   );
 
   const saveAgentTurn = useCallback(
@@ -257,6 +474,8 @@ function RealtimeVoiceCall({
       if (!trimmed || trimmed === lastSavedAgentTextRef.current) {
         return;
       }
+
+      await flushPendingUserTurn();
 
       lastSavedAgentTextRef.current = trimmed;
 
@@ -267,6 +486,26 @@ function RealtimeVoiceCall({
       const currentMessages = getMessages() ?? [];
       const conversationId = resolveConversationId();
       await ensureBackendConversation(conversationId);
+
+      const assistantTurnId = assistantTurnMessageIdRef.current;
+      const existingAssistantMessage =
+        assistantTurnMessageRef.current ??
+        (assistantTurnId
+          ? currentMessages.find((entry) => entry.messageId === assistantTurnId)
+          : undefined);
+
+      if (existingAssistantMessage) {
+        const completedMessage = appendAssistantTextToMessage(existingAssistantMessage, trimmed);
+        updateMessageInView(completedMessage);
+        await persistMessage(completedMessage);
+        assistantTurnMessageIdRef.current = null;
+        assistantTurnMessageRef.current = null;
+        pendingUserMessageIdRef.current = null;
+        userTurnCommittedRef.current = false;
+        currentTurnUserMessageIdRef.current = null;
+        return;
+      }
+
       const parentMessageId =
         pendingUserMessageIdRef.current ??
         currentMessages[currentMessages.length - 1]?.messageId ??
@@ -277,6 +516,7 @@ function RealtimeVoiceCall({
         parentMessageId,
         sender: 'Assistant',
         text: trimmed,
+        content: [{ type: ContentTypes.TEXT, text: trimmed }],
         isCreatedByUser: false,
         endpoint,
         model: realtimeModel,
@@ -285,6 +525,8 @@ function RealtimeVoiceCall({
       };
 
       pendingUserMessageIdRef.current = null;
+      userTurnCommittedRef.current = false;
+      currentTurnUserMessageIdRef.current = null;
       upsertMessageToView(assistantMessage);
       await persistMessage(assistantMessage);
     },
@@ -295,7 +537,9 @@ function RealtimeVoiceCall({
       persistMessage,
       realtimeModel,
       resolveConversationId,
+      flushPendingUserTurn,
       setArtifactsVisible,
+      updateMessageInView,
       upsertMessageToView,
     ],
   );
@@ -320,27 +564,56 @@ function RealtimeVoiceCall({
 
   const handleRealtimeEnded = useCallback(() => {
     pendingUserMessageIdRef.current = null;
+    pendingUserTranscriptRef.current = '';
+    userTurnCommittedRef.current = false;
+    currentTurnUserMessageIdRef.current = null;
+    assistantTurnMessageIdRef.current = null;
+    assistantTurnMessageRef.current = null;
   }, []);
 
   const handleToolCallStart = useCallback(
-    (name: string, _callId: string) => {
+    async (name: string, callId: string, args: Record<string, unknown>) => {
       const label = getToolDisplayLabel(name, localize);
       setActiveToolLabel(label);
-      setVoiceCallToolActivity(label);
+
+      const assistantMessage = await ensureAssistantTurnMessage();
+      const messageId = assistantMessage.messageId;
+      toolCallMessageIdsRef.current.set(callId, messageId);
+
+      const toolPart = buildToolCallContentPart({
+        callId,
+        toolDisplayName: buildMcpToolDisplayName(name, toolMap),
+        args,
+        progress: 0.1,
+      });
+      const updatedMessage = appendToolCallToMessage(assistantMessage, toolPart);
+      assistantTurnMessageRef.current = updatedMessage;
+
+      setVoiceCallActiveToolMessageId(messageId);
+      updateMessageInView(updatedMessage);
+      await persistMessage(updatedMessage);
     },
-    [localize, setVoiceCallToolActivity],
+    [
+      ensureAssistantTurnMessage,
+      localize,
+      persistMessage,
+      setVoiceCallActiveToolMessageId,
+      toolMap,
+      updateMessageInView,
+    ],
   );
 
   const handleToolCallEnd = useCallback(
-    (_name: string, _callId: string, _success: boolean) => {
+    (_name: string, callId: string, _success: boolean) => {
       setActiveToolLabel(null);
-      setVoiceCallToolActivity(null);
+      setVoiceCallActiveToolMessageId(null);
+      toolCallMessageIdsRef.current.delete(callId);
     },
-    [setVoiceCallToolActivity],
+    [setVoiceCallActiveToolMessageId],
   );
 
   const handleToolCall = useCallback(
-    async (name: string, args: Record<string, unknown>, _callId: string) => {
+    async (name: string, args: Record<string, unknown>, callId: string) => {
       const response = await fetch('/api/realtime/tools/execute', {
         method: 'POST',
         credentials: 'include',
@@ -360,17 +633,21 @@ function RealtimeVoiceCall({
         } catch {
           errMsg = responseText || errMsg;
         }
+        await finalizeToolCallInMessage(callId, name, args, errMsg, 1);
         throw new Error(errMsg);
       }
 
       try {
         const parsed = JSON.parse(responseText) as { output?: string };
-        return parsed.output ?? responseText;
+        const output = parsed.output ?? responseText;
+        await finalizeToolCallInMessage(callId, name, args, output, 1);
+        return output;
       } catch {
+        await finalizeToolCallInMessage(callId, name, args, responseText, 1);
         return responseText;
       }
     },
-    [token],
+    [finalizeToolCallInMessage, token],
   );
 
   const {
@@ -389,6 +666,11 @@ function RealtimeVoiceCall({
     onToolCall: handleToolCall,
     onToolCallStart: handleToolCallStart,
     onToolCallEnd: handleToolCallEnd,
+    onTranscriptDelta: (text) => {
+      pendingUserTranscriptRef.current = text;
+    },
+    onUserSpeechStarted: handleUserSpeechStarted,
+    onUserSpeechStopped: handleUserSpeechStopped,
     onUserTurnComplete: handleUserTurnComplete,
     onAgentTurnComplete: handleAgentTurnComplete,
     onEnded: handleRealtimeEnded,
@@ -417,17 +699,21 @@ function RealtimeVoiceCall({
   useEffect(() => {
     return () => {
       setVoiceCallInterimTranscript('');
-      setVoiceCallToolActivity(null);
+      setVoiceCallActiveToolMessageId(null);
       setVoiceCallStatus('idle');
     };
-  }, [setVoiceCallInterimTranscript, setVoiceCallStatus, setVoiceCallToolActivity]);
+  }, [setVoiceCallActiveToolMessageId, setVoiceCallInterimTranscript, setVoiceCallStatus]);
 
   const handleEnd = () => {
     pendingUserMessageIdRef.current = null;
+    pendingUserTranscriptRef.current = '';
+    userTurnCommittedRef.current = false;
+    currentTurnUserMessageIdRef.current = null;
     lastSavedUserTextRef.current = '';
     lastSavedAgentTextRef.current = '';
+    toolCallMessageIdsRef.current.clear();
     setActiveToolLabel(null);
-    setVoiceCallToolActivity(null);
+    setVoiceCallActiveToolMessageId(null);
     disconnect();
     onEndCall();
   };

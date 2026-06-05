@@ -128,7 +128,7 @@ const ContentParts = memo(function ContentParts({
   isLatestMessage,
 }: ContentPartsProps) {
   const attachmentMap = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
-  const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
+  const effectiveIsSubmitting = isSubmitting;
 
   /**
    * Interim skill cards — rendered in a separate slot ABOVE the Parts

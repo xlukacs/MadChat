@@ -58,10 +58,12 @@ type UseRealtimeVoiceOptions = {
   tools?: RealtimeFunctionTool[];
   onTranscriptDelta?: (text: string) => void;
   onAgentTranscript?: (text: string) => void;
+  onUserSpeechStarted?: () => void;
+  onUserSpeechStopped?: (text: string) => void;
   onUserTurnComplete?: (text: string) => void;
   onAgentTurnComplete?: (text: string) => void;
   onToolCall?: (name: string, args: Record<string, unknown>, callId: string) => Promise<string>;
-  onToolCallStart?: (name: string, callId: string) => void;
+  onToolCallStart?: (name: string, callId: string, args: Record<string, unknown>) => void;
   onToolCallEnd?: (name: string, callId: string, success: boolean) => void;
   onInterrupted?: () => void;
   onEnded?: () => void;
@@ -162,6 +164,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const optionsRef = useRef(options);
   const agentTranscriptRef = useRef('');
+  const userTranscriptRef = useRef('');
   const toolExecutionRef = useRef(0);
   const pendingCallsRef = useRef<Map<string, PendingFunctionCall>>(new Map());
   const handledCallIdsRef = useRef<Set<string>>(new Set());
@@ -228,7 +231,8 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
 
     handledCallIdsRef.current.add(callId);
     console.info('[RealtimeVoice] Executing tool call', { name, callId });
-    optionsRef.current.onToolCallStart?.(name, callId);
+    const args = parseToolArguments(functionCall.arguments);
+    optionsRef.current.onToolCallStart?.(name, callId, args);
     void handleFunctionCallsRef.current([functionCall]);
   }, []);
 
@@ -331,8 +335,17 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       }
 
       if (type === 'input_audio_buffer.speech_started') {
+        userTranscriptRef.current = '';
         setUserTranscript('');
         setStatus('listening');
+        optionsRef.current.onUserSpeechStarted?.();
+      }
+
+      if (type === 'input_audio_buffer.speech_stopped') {
+        const text = userTranscriptRef.current.trim();
+        if (text.length > 0) {
+          optionsRef.current.onUserSpeechStopped?.(text);
+        }
       }
 
       if (
@@ -423,6 +436,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       ) {
         const delta = String(event.delta ?? '');
         if (delta.length > 0) {
+          userTranscriptRef.current = `${userTranscriptRef.current}${delta}`;
           setUserTranscript((prev) => {
             const next = `${prev}${delta}`;
             optionsRef.current.onTranscriptDelta?.(next);
@@ -437,6 +451,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       ) {
         const text = String(event.transcript ?? event.text ?? '').trim();
         if (text.length > 0) {
+          userTranscriptRef.current = text;
           setUserTranscript(text);
           optionsRef.current.onTranscriptDelta?.(text);
           optionsRef.current.onUserTurnComplete?.(text);
@@ -490,6 +505,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
     setUserTranscript('');
     setAgentTranscript('');
     agentTranscriptRef.current = '';
+    userTranscriptRef.current = '';
     pendingCallsRef.current.clear();
     handledCallIdsRef.current.clear();
     hasSyncedSessionRef.current = false;

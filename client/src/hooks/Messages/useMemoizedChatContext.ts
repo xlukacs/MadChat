@@ -1,7 +1,9 @@
 import { useRef, useMemo } from 'react';
+import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common/types';
 import { useChatContext } from '~/Providers';
+import store from '~/store';
 
 /**
  * Creates a stable `TMessageChatContext` object for memo'd message components.
@@ -74,7 +76,11 @@ export default function useMemoizedChatContext(
 
   const messageId = message?.messageId ?? null;
   const isLatestMessage = messageId === chatCtx.latestMessageId;
-  const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
+  const voiceCallActiveToolMessageId = useRecoilValue(store.voiceCallActiveToolMessageId);
+  const isActiveRealtimeToolMessage =
+    messageId != null && voiceCallActiveToolMessageId != null && messageId === voiceCallActiveToolMessageId;
+  const effectiveIsSubmitting =
+    isActiveRealtimeToolMessage || (isLatestMessage ? isSubmitting : false);
 
   return { chatContext, effectiveIsSubmitting };
 }

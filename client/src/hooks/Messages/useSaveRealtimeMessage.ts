@@ -1,5 +1,5 @@
 import { apiBaseUrl, request } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 
 type SaveRealtimeMessageParams = {
   conversationId: string;
@@ -7,7 +7,9 @@ type SaveRealtimeMessageParams = {
     Pick<
       TMessage,
       'messageId' | 'parentMessageId' | 'text' | 'sender' | 'isCreatedByUser' | 'endpoint'
-    >;
+    > & {
+      content?: TMessageContentParts[];
+    };
 };
 
 export default function useSaveRealtimeMessage() {
