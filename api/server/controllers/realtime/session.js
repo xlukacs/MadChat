@@ -7,9 +7,22 @@ const DEFAULT_REALTIME_MODEL = 'gpt-realtime-mini';
 const DEFAULT_REALTIME_VOICE = 'alloy';
 const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 
+function isRealtimeFunctionTool(tool) {
+  return (
+    tool != null &&
+    tool.type === 'function' &&
+    typeof tool.name === 'string' &&
+    tool.name.length > 0 &&
+    typeof tool.description === 'string' &&
+    tool.parameters != null &&
+    typeof tool.parameters === 'object' &&
+    !Array.isArray(tool.parameters)
+  );
+}
+
 async function createRealtimeSession(req, res) {
   try {
-    const { sdp, model: requestedModel, voice: requestedVoice, instructions } = req.body ?? {};
+    const { sdp, model: requestedModel, voice: requestedVoice, instructions, tools } = req.body ?? {};
     if (typeof sdp !== 'string' || sdp.trim().length === 0) {
       return res.status(400).json({ error: 'Missing SDP offer in request body' });
     }
@@ -59,6 +72,14 @@ async function createRealtimeSession(req, res) {
 
     if (sessionInstructions) {
       session.instructions = sessionInstructions;
+    }
+
+    if (Array.isArray(tools)) {
+      const realtimeTools = tools.filter(isRealtimeFunctionTool);
+      if (realtimeTools.length > 0) {
+        session.tools = realtimeTools;
+        session.tool_choice = 'auto';
+      }
     }
 
     const formData = new FormData();

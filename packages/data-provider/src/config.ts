@@ -787,6 +787,8 @@ const realtimeSchema = z.object({
   model: z.string().optional(),
   voice: z.string().optional(),
   instructions: z.string().optional(),
+  mcpServers: z.array(z.string()).optional(),
+  artifacts: z.boolean().optional(),
 });
 
 const speechTab = z

@@ -38,6 +38,7 @@ export { default as useDocumentTitle } from './useDocumentTitle';
 export { default as useSpeechToText } from './Input/useSpeechToText';
 export { default as useTextToSpeech } from './Input/useTextToSpeech';
 export { default as useRealtimeVoice } from './Voice/useRealtimeVoice';
+export type { RealtimeFunctionTool } from './Voice/useRealtimeVoice';
 export { default as useGenerationsByLatest } from './useGenerationsByLatest';
 export { default as useLocalizedConfig } from './useLocalizedConfig';
 export { default as useResourcePermissions } from './useResourcePermissions';

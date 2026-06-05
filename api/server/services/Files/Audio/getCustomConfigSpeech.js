@@ -1,4 +1,6 @@
 const { logger } = require('@librechat/data-schemas');
+const { ArtifactModes, EModelEndpoint } = require('librechat-data-provider');
+const { generateArtifactsPrompt } = require('@librechat/api');
 const { getAppConfig } = require('~/server/services/Config');
 
 /**
@@ -39,7 +41,30 @@ async function getCustomConfigSpeech(req, res) {
       realtimeEnabled,
       realtimeModel: realtimeConfig?.model,
       realtimeVoice: realtimeConfig?.voice,
+      realtimeArtifacts: Boolean(realtimeConfig?.artifacts),
     };
+
+    const baseInstructions =
+      typeof realtimeConfig?.instructions === 'string' ? realtimeConfig.instructions.trim() : '';
+    let realtimeInstructions = baseInstructions;
+
+    if (realtimeConfig?.artifacts) {
+      const artifactPrompt = generateArtifactsPrompt({
+        endpoint: EModelEndpoint.openAI,
+        artifacts: ArtifactModes.DEFAULT,
+      });
+      if (artifactPrompt) {
+        const voiceNote =
+          'When creating artifacts during voice conversations, briefly describe what you created; do not read the full code aloud.';
+        realtimeInstructions = [baseInstructions, artifactPrompt, voiceNote].filter(Boolean).join('\n\n');
+      }
+    } else if (baseInstructions) {
+      realtimeInstructions = baseInstructions;
+    }
+
+    if (realtimeInstructions) {
+      settings.realtimeInstructions = realtimeInstructions;
+    }
 
     if (!appConfig.speech?.speechTab) {
       return res.status(200).send(settings);

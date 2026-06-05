@@ -5,10 +5,26 @@ export type RealtimeVoiceStatus =
   | 'idle'
   | 'connecting'
   | 'listening'
+  | 'processing'
   | 'speaking'
   | 'interrupted'
   | 'ended'
   | 'error';
+
+export type RealtimeFunctionTool = {
+  type: 'function';
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+type RealtimeFunctionCallItem = {
+  type?: string;
+  id?: string;
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+};
 
 type RealtimeVoiceEvent = {
   type?: string;
@@ -16,8 +32,22 @@ type RealtimeVoiceEvent = {
   delta?: string;
   text?: string;
   truncated?: boolean;
+  call_id?: string;
+  item_id?: string;
+  arguments?: string;
+  name?: string;
+  item?: RealtimeFunctionCallItem;
   error?: { message?: string } | string;
+  response?: {
+    output?: RealtimeFunctionCallItem[];
+  };
   [key: string]: unknown;
+};
+
+type PendingFunctionCall = {
+  name?: string;
+  callId?: string;
+  arguments?: string;
 };
 
 type UseRealtimeVoiceOptions = {
@@ -25,10 +55,12 @@ type UseRealtimeVoiceOptions = {
   voice?: string;
   transcriptionModel?: string;
   instructions?: string;
+  tools?: RealtimeFunctionTool[];
   onTranscriptDelta?: (text: string) => void;
   onAgentTranscript?: (text: string) => void;
   onUserTurnComplete?: (text: string) => void;
   onAgentTurnComplete?: (text: string) => void;
+  onToolCall?: (name: string, args: Record<string, unknown>, callId: string) => Promise<string>;
   onInterrupted?: () => void;
   onEnded?: () => void;
   onError?: (message: string) => void;
@@ -40,6 +72,78 @@ function parseMessageData(input: string): RealtimeVoiceEvent | null {
   } catch {
     return null;
   }
+}
+
+function parseToolArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw || raw.trim().length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function extractFunctionCalls(event: RealtimeVoiceEvent): RealtimeFunctionCallItem[] {
+  const output = event.response?.output;
+  if (!Array.isArray(output)) {
+    return [];
+  }
+  return output.filter((item) => item?.type === 'function_call');
+}
+
+function toFunctionCallItem(
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+): RealtimeFunctionCallItem {
+  return {
+    type: 'function_call',
+    call_id: callId,
+    name,
+    arguments: JSON.stringify(args),
+  };
+}
+
+function buildSessionUpdate(options: UseRealtimeVoiceOptions): Record<string, unknown> {
+  const sessionTools = options.tools ?? [];
+  const sessionUpdate: Record<string, unknown> = {
+    type: 'session.update',
+    session: {
+      type: 'realtime',
+      model: options.model,
+      audio: {
+        input: {
+          transcription: {
+            model: options.transcriptionModel || 'gpt-4o-mini-transcribe',
+          },
+        },
+        output: {
+          voice: options.voice,
+        },
+      },
+      instructions: options.instructions,
+      turn_detection: {
+        type: 'server_vad',
+      },
+    },
+  };
+
+  if (sessionTools.length > 0) {
+    (sessionUpdate.session as Record<string, unknown>).tools = sessionTools;
+    (sessionUpdate.session as Record<string, unknown>).tool_choice = 'auto';
+  }
+
+  return sessionUpdate;
+}
+
+function getSessionTools(options: UseRealtimeVoiceOptions): RealtimeFunctionTool[] {
+  return options.tools ?? [];
 }
 
 export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) {
@@ -56,10 +160,74 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const optionsRef = useRef(options);
   const agentTranscriptRef = useRef('');
+  const toolExecutionRef = useRef(0);
+  const pendingCallsRef = useRef<Map<string, PendingFunctionCall>>(new Map());
+  const handledCallIdsRef = useRef<Set<string>>(new Set());
+  const hasSyncedSessionRef = useRef(false);
+  const lastAgentTurnTranscriptRef = useRef('');
 
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
+
+  const sendDataChannelEvent = useCallback((payload: Record<string, unknown>) => {
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify(payload));
+    }
+  }, []);
+
+  const syncSessionConfig = useCallback(() => {
+    if (dcRef.current?.readyState !== 'open') {
+      return;
+    }
+    sendDataChannelEvent(buildSessionUpdate(optionsRef.current));
+    hasSyncedSessionRef.current = true;
+  }, [sendDataChannelEvent]);
+
+  useEffect(() => {
+    if (!hasSyncedSessionRef.current) {
+      return;
+    }
+    if (dcRef.current?.readyState !== 'open') {
+      return;
+    }
+    if ((options.tools?.length ?? 0) === 0) {
+      return;
+    }
+    sendDataChannelEvent(buildSessionUpdate(optionsRef.current));
+  }, [options.tools?.length, sendDataChannelEvent]);
+
+  const submitToolResult = useCallback(
+    (callId: string, output: string) => {
+      sendDataChannelEvent({
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: callId,
+          output,
+        },
+      });
+      sendDataChannelEvent({
+        type: 'response.create',
+        response: {
+          output_modalities: ['audio'],
+        },
+      });
+    },
+    [sendDataChannelEvent],
+  );
+
+  const executeFunctionCall = useCallback((functionCall: RealtimeFunctionCallItem) => {
+    const callId = functionCall.call_id;
+    const name = functionCall.name;
+    if (!callId || !name || handledCallIdsRef.current.has(callId)) {
+      return;
+    }
+
+    handledCallIdsRef.current.add(callId);
+    console.info('[RealtimeVoice] Executing tool call', { name, callId });
+    void handleFunctionCallsRef.current([functionCall]);
+  }, []);
 
   const cleanup = useCallback(() => {
     dcRef.current?.close();
@@ -86,9 +254,59 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
     setIsConnected(false);
   }, []);
 
+  const handleFunctionCalls = useCallback(
+    async (functionCalls: RealtimeFunctionCallItem[]) => {
+      const onToolCall = optionsRef.current.onToolCall;
+      if (!onToolCall || functionCalls.length === 0) {
+        return;
+      }
+
+      toolExecutionRef.current += 1;
+      setStatus('processing');
+
+      try {
+        for (const functionCall of functionCalls) {
+          const callId = functionCall.call_id;
+          const name = functionCall.name;
+          if (!callId || !name) {
+            continue;
+          }
+
+          const args = parseToolArguments(functionCall.arguments);
+          const output = await onToolCall(name, args, callId);
+          submitToolResult(callId, output);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Tool execution failed';
+        setError(message);
+        setStatus('error');
+        optionsRef.current.onError?.(message);
+      } finally {
+        toolExecutionRef.current -= 1;
+        if (toolExecutionRef.current <= 0) {
+          toolExecutionRef.current = 0;
+        }
+      }
+    },
+    [submitToolResult],
+  );
+
+  const handleFunctionCallsRef = useRef(handleFunctionCalls);
+  useEffect(() => {
+    handleFunctionCallsRef.current = handleFunctionCalls;
+  }, [handleFunctionCalls]);
+
   const handleEvent = useCallback(
     (event: RealtimeVoiceEvent) => {
       const type = event?.type ?? '';
+
+      if (
+        type.includes('function_call') ||
+        type === 'response.output_item.added' ||
+        type === 'response.output_item.done'
+      ) {
+        console.debug('[RealtimeVoice] Tool-related event', type, event);
+      }
 
       if (type.includes('error')) {
         const message =
@@ -120,7 +338,57 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         type === 'response.audio.done' ||
         type === 'response.output_audio.done'
       ) {
-        setStatus('listening');
+        if (toolExecutionRef.current <= 0) {
+          setStatus('listening');
+        }
+      }
+
+      if (type === 'response.done') {
+        for (const functionCall of extractFunctionCalls(event)) {
+          if (functionCall.call_id && functionCall.name) {
+            executeFunctionCall(functionCall);
+          }
+        }
+      }
+
+      if (type === 'response.output_item.added') {
+        const item = event.item;
+        if (item?.type === 'function_call') {
+          const pending: PendingFunctionCall = {
+            name: item.name,
+            callId: item.call_id,
+            arguments: item.arguments,
+          };
+          if (item.call_id) {
+            pendingCallsRef.current.set(item.call_id, pending);
+          }
+          if (item.id) {
+            pendingCallsRef.current.set(item.id, pending);
+          }
+        }
+      }
+
+      if (type === 'response.output_item.done') {
+        const item = event.item;
+        if (item?.type === 'function_call' && item.call_id && item.name) {
+          executeFunctionCall(
+            toFunctionCallItem(item.call_id, item.name, parseToolArguments(item.arguments)),
+          );
+        }
+      }
+
+      if (type === 'response.function_call_arguments.done') {
+        const callId = String(event.call_id ?? '');
+        const itemId = String(event.item_id ?? '');
+        const pending =
+          pendingCallsRef.current.get(callId) ?? pendingCallsRef.current.get(itemId);
+        const name = pending?.name ?? String(event.name ?? '');
+        const argsStr = String(event.arguments ?? pending?.arguments ?? '{}');
+        if (callId && name) {
+          executeFunctionCall(
+            toFunctionCallItem(callId, name, parseToolArguments(argsStr)),
+          );
+        }
       }
 
       if (
@@ -181,7 +449,11 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       ) {
         if (event.truncated !== true) {
           const completedTranscript = agentTranscriptRef.current.trim();
-          if (completedTranscript.length > 0) {
+          if (
+            completedTranscript.length > 0 &&
+            completedTranscript !== lastAgentTurnTranscriptRef.current
+          ) {
+            lastAgentTurnTranscriptRef.current = completedTranscript;
             optionsRef.current.onAgentTurnComplete?.(completedTranscript);
           }
           setAgentTranscript('');
@@ -189,7 +461,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
         }
       }
     },
-    [],
+    [executeFunctionCall],
   );
 
   const connect = useCallback(async () => {
@@ -207,6 +479,10 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
     setUserTranscript('');
     setAgentTranscript('');
     agentTranscriptRef.current = '';
+    pendingCallsRef.current.clear();
+    handledCallIdsRef.current.clear();
+    hasSyncedSessionRef.current = false;
+    lastAgentTurnTranscriptRef.current = '';
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -260,28 +536,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       };
 
       dc.onopen = () => {
-        const sessionUpdate = {
-          type: 'session.update',
-          session: {
-            type: 'realtime',
-            model: optionsRef.current.model,
-            audio: {
-              input: {
-                transcription: {
-                  model: optionsRef.current.transcriptionModel || 'gpt-4o-mini-transcribe',
-                },
-              },
-              output: {
-                voice: optionsRef.current.voice,
-              },
-            },
-            instructions: optionsRef.current.instructions,
-            turn_detection: {
-              type: 'server_vad',
-            },
-          },
-        };
-        dc.send(JSON.stringify(sessionUpdate));
+        syncSessionConfig();
       };
 
       const offer = await pc.createOffer();
@@ -299,6 +554,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
           model: optionsRef.current.model,
           voice: optionsRef.current.voice,
           instructions: optionsRef.current.instructions,
+          tools: getSessionTools(optionsRef.current),
         }),
       });
 
@@ -336,7 +592,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
       optionsRef.current.onError?.(message);
       cleanup();
     }
-  }, [cleanup, handleEvent, token]);
+  }, [cleanup, handleEvent, syncSessionConfig, token]);
 
   const disconnect = useCallback(() => {
     cleanup();
@@ -367,5 +623,6 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
     connect,
     disconnect,
     interrupt,
+    submitToolResult,
   };
 }

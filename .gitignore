@@ -179,3 +179,5 @@ claude-flow
 hive-mind-prompt-*.txt
 CLAUDE.md
 .gsd
+/mcp/replicate-image/replicate_image/__pycache__
+/mcp/replicate-image/replicate_image
