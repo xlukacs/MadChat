@@ -3,7 +3,7 @@ const { extractEnvVariable } = require('librechat-data-provider');
 const { getAppConfig } = require('~/server/services/Config');
 
 const DEFAULT_REALTIME_URL = 'https://api.openai.com/v1/realtime/calls';
-const DEFAULT_REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
+const DEFAULT_REALTIME_MODEL = 'gpt-realtime-mini';
 const DEFAULT_REALTIME_VOICE = 'alloy';
 const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 

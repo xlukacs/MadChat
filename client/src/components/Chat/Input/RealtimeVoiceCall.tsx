@@ -48,7 +48,7 @@ function RealtimeVoiceCall({
   const saveRealtimeMessage = useSaveRealtimeMessage();
   const pendingUserMessageIdRef = useRef<string | null>(null);
 
-  const realtimeModel = speechConfig?.realtimeModel || 'gpt-4o-realtime-preview-2024-12-17';
+  const realtimeModel = speechConfig?.realtimeModel || 'gpt-realtime-mini';
   const realtimeVoice = speechConfig?.realtimeVoice || voice || 'alloy';
   const endpoint = conversation?.endpointType ?? conversation?.endpoint ?? '';
 
