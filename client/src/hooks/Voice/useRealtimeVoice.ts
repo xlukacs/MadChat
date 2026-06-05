@@ -61,6 +61,8 @@ type UseRealtimeVoiceOptions = {
   onUserTurnComplete?: (text: string) => void;
   onAgentTurnComplete?: (text: string) => void;
   onToolCall?: (name: string, args: Record<string, unknown>, callId: string) => Promise<string>;
+  onToolCallStart?: (name: string, callId: string) => void;
+  onToolCallEnd?: (name: string, callId: string, success: boolean) => void;
   onInterrupted?: () => void;
   onEnded?: () => void;
   onError?: (message: string) => void;
@@ -226,6 +228,7 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
 
     handledCallIdsRef.current.add(callId);
     console.info('[RealtimeVoice] Executing tool call', { name, callId });
+    optionsRef.current.onToolCallStart?.(name, callId);
     void handleFunctionCallsRef.current([functionCall]);
   }, []);
 
@@ -273,8 +276,16 @@ export default function useRealtimeVoice(options: UseRealtimeVoiceOptions = {}) 
           }
 
           const args = parseToolArguments(functionCall.arguments);
-          const output = await onToolCall(name, args, callId);
-          submitToolResult(callId, output);
+          let success = true;
+          try {
+            const output = await onToolCall(name, args, callId);
+            submitToolResult(callId, output);
+          } catch (err) {
+            success = false;
+            throw err;
+          } finally {
+            optionsRef.current.onToolCallEnd?.(name, callId, success);
+          }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Tool execution failed';

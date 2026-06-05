@@ -21,6 +21,7 @@ function MessagesViewContent({
   const fontSize = useAtomValue(fontSizeAtom);
   const voiceChatMode = useRecoilValue(store.voiceChatMode);
   const voiceCallInterimTranscript = useRecoilValue(store.voiceCallInterimTranscript);
+  const voiceCallToolActivity = useRecoilValue(store.voiceCallToolActivity);
   const { screenshotTargetRef } = useScreenshot();
   const scrollButtonPreference = useRecoilValue(store.showScrollButton);
   const [currentEditId, setCurrentEditId] = useState<number | string | null>(-1);
@@ -37,6 +38,7 @@ function MessagesViewContent({
 
   const { conversationId } = conversation ?? {};
   const showLiveTranscript = voiceChatMode && voiceCallInterimTranscript.trim().length > 0;
+  const showToolActivity = voiceChatMode && voiceCallToolActivity != null && voiceCallToolActivity.length > 0;
 
   return (
     <>
@@ -87,26 +89,36 @@ function MessagesViewContent({
             </div>
           </div>
 
-          {showLiveTranscript && (
+          {(showLiveTranscript || showToolActivity) && (
             <div
               className="absolute bottom-24 left-1/2 z-40 w-full max-w-xl -translate-x-1/2 px-4 animate-in fade-in duration-200"
               role="status"
               aria-live="polite"
             >
               <div className="scrollbar-gutter-stable max-h-[40vh] overflow-y-auto rounded-2xl border border-emerald-800/40 bg-emerald-950/90 px-4 py-3 shadow-lg backdrop-blur-sm">
-                <p className="whitespace-pre-wrap break-words text-sm text-emerald-100">
-                  {voiceCallInterimTranscript}
-                </p>
-                <div className="mt-2 flex gap-1">
-                  {[1, 2, 3].map((i) => (
-                    <span
-                      key={i}
-                      className="h-1 w-1 animate-pulse rounded-full bg-emerald-400"
-                      style={{ animationDelay: `${i * 150}ms` }}
-                      aria-hidden
-                    />
-                  ))}
-                </div>
+                {showToolActivity && (
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-700/50 bg-emerald-900/60 px-3 py-1 text-xs font-medium text-emerald-100">
+                    <span className="inline-block size-2 animate-pulse rounded-full bg-emerald-400" aria-hidden />
+                    {localize('com_ui_voice_realtime_using_tool', { toolName: voiceCallToolActivity ?? '' })}
+                  </div>
+                )}
+                {showLiveTranscript && (
+                  <p className="whitespace-pre-wrap break-words text-sm text-emerald-100">
+                    {voiceCallInterimTranscript}
+                  </p>
+                )}
+                {showLiveTranscript && (
+                  <div className="mt-2 flex gap-1">
+                    {[1, 2, 3].map((i) => (
+                      <span
+                        key={i}
+                        className="h-1 w-1 animate-pulse rounded-full bg-emerald-400"
+                        style={{ animationDelay: `${i * 150}ms` }}
+                        aria-hidden
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

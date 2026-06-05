@@ -18,9 +18,16 @@ const voiceCallInterimTranscript = atom<string>({
   default: '',
 });
 
+/** Active realtime tool label shown while the agent executes an MCP tool */
+const voiceCallToolActivity = atom<string | null>({
+  key: 'voiceCallToolActivity',
+  default: null,
+});
+
 export default {
   voiceChatMode,
   voiceMode,
   voiceCallStatus,
   voiceCallInterimTranscript,
+  voiceCallToolActivity,
 };

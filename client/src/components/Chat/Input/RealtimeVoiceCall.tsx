@@ -15,6 +15,7 @@ import {
 import type { VoiceCallStatus } from '~/store/voiceChat';
 import VoiceModeFloatingBar from './VoiceModeFloatingBar';
 import store from '~/store';
+import { getToolDisplayLabel } from '~/utils/toolLabels';
 
 function mapRealtimeStatusToCallStatus(status: string): VoiceCallStatus {
   if (status === 'speaking') {
@@ -53,6 +54,7 @@ function RealtimeVoiceCall({
   const voice = useRecoilValue(store.voice);
   const setVoiceCallStatus = useSetRecoilState(store.voiceCallStatus);
   const setVoiceCallInterimTranscript = useSetRecoilState(store.voiceCallInterimTranscript);
+  const setVoiceCallToolActivity = useSetRecoilState(store.voiceCallToolActivity);
   const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
   const { data: speechConfig, isLoading: isSpeechConfigLoading } = useGetCustomConfigSpeechQuery({
     enabled: true,
@@ -65,6 +67,7 @@ function RealtimeVoiceCall({
   const lastSavedAgentTextRef = useRef('');
   const [tools, setTools] = useState<RealtimeFunctionTool[]>([]);
   const [toolsReady, setToolsReady] = useState(false);
+  const [activeToolLabel, setActiveToolLabel] = useState<string | null>(null);
 
   const realtimeModel = speechConfig?.realtimeModel || 'gpt-realtime-mini';
   const realtimeVoice = speechConfig?.realtimeVoice || voice || 'alloy';
@@ -78,7 +81,10 @@ function RealtimeVoiceCall({
     }
 
     const toolNames = tools.map((tool) => tool.name).join(', ');
-    const toolHint = `You have function tools available (${toolNames}). When the user asks about the current time or timezone conversions, you must call the appropriate tool instead of guessing.`;
+    const toolHint =
+      'You have function tools available (' +
+      toolNames +
+      '). Use time tools for current time and timezone questions. Use search and fetch tools when the user asks about recent events, facts, or anything you should look up online. Always call the appropriate tool instead of guessing.';
 
     return [realtimeInstructions, toolHint].filter(Boolean).join('\n\n');
   }, [realtimeInstructions, tools]);
@@ -316,6 +322,23 @@ function RealtimeVoiceCall({
     pendingUserMessageIdRef.current = null;
   }, []);
 
+  const handleToolCallStart = useCallback(
+    (name: string, _callId: string) => {
+      const label = getToolDisplayLabel(name, localize);
+      setActiveToolLabel(label);
+      setVoiceCallToolActivity(label);
+    },
+    [localize, setVoiceCallToolActivity],
+  );
+
+  const handleToolCallEnd = useCallback(
+    (_name: string, _callId: string, _success: boolean) => {
+      setActiveToolLabel(null);
+      setVoiceCallToolActivity(null);
+    },
+    [setVoiceCallToolActivity],
+  );
+
   const handleToolCall = useCallback(
     async (name: string, args: Record<string, unknown>, _callId: string) => {
       const response = await fetch('/api/realtime/tools/execute', {
@@ -364,6 +387,8 @@ function RealtimeVoiceCall({
     instructions: sessionInstructions,
     tools,
     onToolCall: handleToolCall,
+    onToolCallStart: handleToolCallStart,
+    onToolCallEnd: handleToolCallEnd,
     onUserTurnComplete: handleUserTurnComplete,
     onAgentTurnComplete: handleAgentTurnComplete,
     onEnded: handleRealtimeEnded,
@@ -392,20 +417,23 @@ function RealtimeVoiceCall({
   useEffect(() => {
     return () => {
       setVoiceCallInterimTranscript('');
+      setVoiceCallToolActivity(null);
       setVoiceCallStatus('idle');
     };
-  }, [setVoiceCallInterimTranscript, setVoiceCallStatus]);
+  }, [setVoiceCallInterimTranscript, setVoiceCallStatus, setVoiceCallToolActivity]);
 
   const handleEnd = () => {
     pendingUserMessageIdRef.current = null;
     lastSavedUserTextRef.current = '';
     lastSavedAgentTextRef.current = '';
+    setActiveToolLabel(null);
+    setVoiceCallToolActivity(null);
     disconnect();
     onEndCall();
   };
 
   return (
-    <VoiceModeFloatingBar status={callStatus} onEndCall={handleEnd}>
+    <VoiceModeFloatingBar status={callStatus} onEndCall={handleEnd} activeToolLabel={activeToolLabel}>
       {isConnected ? (
         <button
           type="button"

@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Mic, Volume2, Loader2, PhoneOff } from 'lucide-react';
+import { Mic, Volume2, Loader2, PhoneOff, Wrench } from 'lucide-react';
 import { useLocalize } from '~/hooks';
 import type { VoiceCallStatus } from '~/store/voiceChat';
 import { cn } from '~/utils';
@@ -8,9 +8,15 @@ interface VoiceModeFloatingBarProps {
   status: VoiceCallStatus;
   onEndCall: () => void;
   children?: React.ReactNode;
+  activeToolLabel?: string | null;
 }
 
-function VoiceModeFloatingBar({ status, onEndCall, children }: VoiceModeFloatingBarProps) {
+function VoiceModeFloatingBar({
+  status,
+  onEndCall,
+  children,
+  activeToolLabel,
+}: VoiceModeFloatingBarProps) {
   const localize = useLocalize();
 
   const statusConfig: Record<VoiceCallStatus, { label: string; icon: React.ReactNode }> = {
@@ -33,6 +39,15 @@ function VoiceModeFloatingBar({ status, onEndCall, children }: VoiceModeFloating
   };
 
   const config = statusConfig[status];
+  const showToolActivity = Boolean(activeToolLabel);
+  const statusLabel = showToolActivity
+    ? localize('com_ui_voice_realtime_using_tool', { toolName: activeToolLabel ?? '' })
+    : config.label;
+  const statusIcon = showToolActivity ? (
+    <Wrench className="size-5 shrink-0 animate-pulse" aria-hidden />
+  ) : (
+    config.icon
+  );
 
   return (
     <div
@@ -42,11 +57,11 @@ function VoiceModeFloatingBar({ status, onEndCall, children }: VoiceModeFloating
       )}
       role="status"
       aria-live="polite"
-      aria-label={config.label}
+      aria-label={statusLabel}
     >
       <div className="flex items-center gap-2 text-emerald-100">
-        {config.icon}
-        <span className="text-sm font-medium">{config.label}</span>
+        {statusIcon}
+        <span className="max-w-[240px] truncate text-sm font-medium">{statusLabel}</span>
       </div>
       <div className="flex items-center gap-2">{children}</div>
       <button
