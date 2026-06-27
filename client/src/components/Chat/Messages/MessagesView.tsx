@@ -28,6 +28,7 @@ function MessagesViewContent({
 
   const {
     conversation,
+    contentRef,
     scrollableRef,
     messagesEndRef,
     showScrollButton,
@@ -53,6 +54,7 @@ function MessagesViewContent({
             }}
           >
             <div
+              ref={contentRef}
               className={cn(
                 'flex flex-col pb-9 pt-14 dark:bg-transparent',
                 voiceChatMode && 'mx-auto max-w-2xl px-4 pb-28',

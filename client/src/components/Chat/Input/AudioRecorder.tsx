@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { MicOff } from 'lucide-react';
 import { useToastContext, TooltipAnchor, ListeningIcon, Spinner } from '@librechat/client';
 import { useLocalize, useSpeechToText, useGetAudioSettings } from '~/hooks';
+import { globalAudioId, type TAskFunction } from '~/common';
 import { useChatFormContext } from '~/Providers';
 import { cn } from '~/utils';
 
@@ -35,7 +36,6 @@ export default memo(function AudioRecorder({
   disabled,
   ask,
   methods,
-  textAreaRef,
   isSubmitting,
   onStartRecording,
   onSpeechDetected,
@@ -48,9 +48,8 @@ export default memo(function AudioRecorder({
   pauseListening,
 }: {
   disabled: boolean;
-  ask: (data: { text: string }) => void;
+  ask: TAskFunction;
   methods: ReturnType<typeof useChatFormContext>;
-  textAreaRef: React.RefObject<HTMLTextAreaElement>;
   isSubmitting: boolean;
   onStartRecording?: () => void;
   onSpeechDetected?: () => void;
@@ -104,7 +103,10 @@ export default memo(function AudioRecorder({
         }
         onInterimTranscriptChange?.('');
         hasDetectedSpeechRef.current = false;
-        ask({ text: finalText });
+        const submitted = ask({ text: finalText });
+        if (submitted === false) {
+          return;
+        }
         reset({ text: '' });
         existingTextRef.current = '';
       }
