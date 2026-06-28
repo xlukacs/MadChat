@@ -345,7 +345,11 @@ server.tool(
 
     const backendSession = await createBackendSession(input);
     const sessionId = backendSession?.sessionId || randomUUID();
-    const browser = await chromium.launch({ headless: process.env.BROWSER_HEADLESS !== 'false' });
+    const launchOptions = { headless: process.env.BROWSER_HEADLESS !== 'false' };
+    if (process.env.BROWSER_NO_SANDBOX === 'true') {
+      launchOptions.args = ['--no-sandbox', '--disable-setuid-sandbox'];
+    }
+    const browser = await chromium.launch(launchOptions);
     const context = await browser.newContext();
     const page = await context.newPage();
     const session = {
