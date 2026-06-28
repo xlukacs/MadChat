@@ -120,7 +120,7 @@ function BrowserSessionCard({ result }: { result: BrowserTaskResult }) {
 
   useEffect(() => {
     let cancelled = false;
-    let interval: ReturnType<typeof window.setInterval> | undefined;
+    let interval: number | undefined;
 
     const refresh = async () => {
       try {

@@ -1,8 +1,10 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { MicOff } from 'lucide-react';
 import { useToastContext, TooltipAnchor, ListeningIcon, Spinner } from '@librechat/client';
+import type { RefObject } from 'react';
+
 import { useLocalize, useSpeechToText, useGetAudioSettings } from '~/hooks';
-import { globalAudioId, type TAskFunction } from '~/common';
+import type { TAskFunction } from '~/common';
 import { useChatFormContext } from '~/Providers';
 import { cn } from '~/utils';
 
@@ -36,6 +38,7 @@ export default memo(function AudioRecorder({
   disabled,
   ask,
   methods,
+  textAreaRef,
   isSubmitting,
   onStartRecording,
   onSpeechDetected,
@@ -50,6 +53,7 @@ export default memo(function AudioRecorder({
   disabled: boolean;
   ask: TAskFunction;
   methods: ReturnType<typeof useChatFormContext>;
+  textAreaRef: RefObject<HTMLTextAreaElement>;
   isSubmitting: boolean;
   onStartRecording?: () => void;
   onSpeechDetected?: () => void;
@@ -59,7 +63,7 @@ export default memo(function AudioRecorder({
   onSTTSourceChange?: (source: 'external' | 'browser') => void;
   preferExternalSTT?: boolean;
   /** When true, do not submit transcriptions (avoids TTS echo being sent as user message) */
-  suppressTranscriptRef?: React.RefObject<boolean>;
+  suppressTranscriptRef?: RefObject<boolean>;
   /** When true, stop recognition so no audio is sent to STT (avoids TTS echo in pipeline). Barge-in handled separately. */
   pauseListening?: boolean;
 }) {

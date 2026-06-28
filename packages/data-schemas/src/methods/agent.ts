@@ -636,7 +636,9 @@ export function createAgentMethods(
             versions?: unknown[];
           };
           agentObj.version = (versions as unknown[]).length;
-          return agentObj;
+          return redactAgentCredentialSecrets(
+            agentObj as unknown as Record<string, unknown>,
+          ) as unknown as IAgent;
         }
       }
 

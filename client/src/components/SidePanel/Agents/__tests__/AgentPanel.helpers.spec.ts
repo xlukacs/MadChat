@@ -71,6 +71,49 @@ describe('composeAgentUpdatePayload', () => {
 
     expect(payload.avatar).toBeUndefined();
   });
+
+  it('omits blank passwords for credentials without a saved password', () => {
+    const form = createForm();
+    form.credentials = [
+      {
+        origin: 'https://app.example.com',
+        loginUrl: 'https://app.example.com/login',
+        username: 'user',
+        password: '',
+        passwordSet: false,
+        enabled: true,
+      },
+    ];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.credentials?.[0]).toMatchObject({
+      origin: 'https://app.example.com',
+      loginUrl: 'https://app.example.com/login',
+      username: 'user',
+      enabled: true,
+    });
+    expect(payload.credentials?.[0]).not.toHaveProperty('password');
+  });
+
+  it('sends a blank password when clearing a saved credential password', () => {
+    const form = createForm();
+    form.credentials = [
+      {
+        id: 'credential_123',
+        origin: 'https://app.example.com',
+        loginUrl: 'https://app.example.com/login',
+        username: 'user',
+        password: '',
+        passwordSet: true,
+        enabled: true,
+      },
+    ];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.credentials?.[0]).toHaveProperty('password', '');
+  });
 });
 
 describe('persistAvatarChanges', () => {

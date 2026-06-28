@@ -12,6 +12,18 @@ import { useListAgentsQuery } from '~/data-provider';
 
 const keys = new Set(Object.keys(defaultAgentFormValues));
 
+function getCredentialFormValues(credentials: Agent['credentials']): AgentForm['credentials'] {
+  if (!Array.isArray(credentials)) {
+    return [];
+  }
+  return credentials.map((credential) => ({
+    ...credential,
+    password: undefined,
+    passwordSet: credential.passwordSet === true,
+    enabled: credential.enabled !== false,
+  }));
+}
+
 function AgentSelect({
   agentQuery,
   selectedAgentId = null,
@@ -81,6 +93,7 @@ function AgentSelect({
         category: fullAgent.category || 'general',
         // Make sure support_contact is properly loaded
         support_contact: fullAgent.support_contact,
+        credentials: getCredentialFormValues(fullAgent.credentials),
         avatar_file: null,
         avatar_preview: fullAgent.avatar?.filepath ?? '',
         avatar_action: null,
@@ -89,6 +102,10 @@ function AgentSelect({
       Object.entries(fullAgent).forEach(([name, value]) => {
         if (name === 'model_parameters') {
           formValues[name] = value;
+          return;
+        }
+
+        if (name === 'credentials') {
           return;
         }
 

@@ -87,6 +87,16 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
   const model = _model ?? '';
   const provider =
     (typeof _provider === 'string' ? _provider : (_provider as StringOption).value) ?? '';
+  const credentialPayload = credentials?.map(({ passwordSet, ...credential }) => {
+    if (credential.password !== '') {
+      return credential;
+    }
+    if (passwordSet === true) {
+      return credential;
+    }
+    const { password: _password, ...credentialWithoutPassword } = credential;
+    return credentialWithoutPassword;
+  });
 
   return {
     payload: {
@@ -106,7 +116,7 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
       category,
       support_contact,
       tool_options,
-      credentials,
+      credentials: credentialPayload,
       skills,
       skills_enabled,
       ...(shouldResetAvatar ? { avatar: null } : {}),
