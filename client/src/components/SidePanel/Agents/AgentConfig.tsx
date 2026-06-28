@@ -33,6 +33,7 @@ import { icons } from '~/hooks/Endpoint/Icons';
 import Instructions from './Instructions';
 import AgentAvatar from './AgentAvatar';
 import FileContext from './FileContext';
+import Credentials from './Credentials';
 import SearchForm from './Search/Form';
 import FileSearch from './FileSearch';
 import Artifacts from './Artifacts';
@@ -390,6 +391,7 @@ export default function AgentConfig() {
             setShowMCPToolDialog={setShowMCPToolDialog}
           />
         )}
+        <Credentials />
 
         {showSkills && (
           <div className="mb-4">

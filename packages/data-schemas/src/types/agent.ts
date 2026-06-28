@@ -3,12 +3,19 @@ import type {
   GraphEdge,
   AgentToolOptions,
   AgentToolResources,
+  AgentCredentialSummary,
   AgentSubagentsConfig,
 } from 'librechat-data-provider';
 
 export interface ISupportContact {
   name?: string;
   email?: string;
+}
+
+export interface IAgentCredential extends Omit<AgentCredentialSummary, 'updatedAt'> {
+  encryptedPassword?: string;
+  passwordHash?: string;
+  updatedAt?: Date;
 }
 
 export interface IAgent extends Omit<Document, 'model'> {
@@ -50,5 +57,7 @@ export interface IAgent extends Omit<Document, 'model'> {
   tool_options?: AgentToolOptions;
   /** Subagent spawning configuration — isolated-context child agents. */
   subagents?: AgentSubagentsConfig;
+  /** Encrypted per-origin website credentials for browser automation. */
+  credentials?: IAgentCredential[];
   tenantId?: string;
 }

@@ -254,6 +254,39 @@ export type AgentSubagentsConfig = {
   agent_ids?: string[];
 };
 
+export type AgentCredentialAuthType = 'basic_login';
+
+export type AgentCredentialInput = {
+  id?: string;
+  label?: string;
+  origin: string;
+  loginUrl?: string;
+  authType?: AgentCredentialAuthType;
+  username?: string;
+  password?: string;
+  usernameSelector?: string;
+  passwordSelector?: string;
+  submitSelector?: string;
+  successSelector?: string;
+  enabled?: boolean;
+};
+
+export type AgentCredentialSummary = {
+  id: string;
+  label?: string;
+  origin: string;
+  loginUrl?: string;
+  authType: AgentCredentialAuthType;
+  username?: string;
+  passwordSet: boolean;
+  usernameSelector?: string;
+  passwordSelector?: string;
+  submitSelector?: string;
+  successSelector?: string;
+  enabled: boolean;
+  updatedAt?: string;
+};
+
 export type Agent = {
   _id?: string;
   id: string;
@@ -295,6 +328,8 @@ export type Agent = {
   skills_enabled?: boolean;
   /** Subagent spawning configuration — isolated-context child agents. */
   subagents?: AgentSubagentsConfig;
+  /** Redacted per-origin website credentials for browser automation. */
+  credentials?: AgentCredentialSummary[];
 };
 
 export type TAgentsMap = Record<string, Agent | undefined>;
@@ -323,7 +358,9 @@ export type AgentCreateParams = {
   | 'skills'
   | 'skills_enabled'
   | 'subagents'
->;
+> & {
+    credentials?: AgentCredentialInput[];
+  };
 
 export type AgentUpdateParams = {
   name?: string | null;
@@ -350,7 +387,9 @@ export type AgentUpdateParams = {
   | 'skills'
   | 'skills_enabled'
   | 'subagents'
->;
+> & {
+    credentials?: AgentCredentialInput[];
+  };
 
 export type AgentListParams = {
   limit?: number;

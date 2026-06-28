@@ -176,6 +176,8 @@ claude-flow.config.json
 *.sqlite-wal
 claude-flow
 .playwright-mcp/*
+/mcp/browser/.env
+/mcp/browser/state/
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
 CLAUDE.md
@@ -183,4 +185,3 @@ CLAUDE.md
 /mcp/replicate-image/replicate_image/__pycache__
 /mcp/replicate-image/replicate_image
 codedb.snapshot
-

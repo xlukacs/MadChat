@@ -6,10 +6,15 @@ import {
   actionDelimiter,
   isActionTool,
 } from 'librechat-data-provider';
-import type { AgentToolResources } from 'librechat-data-provider';
+import type {
+  AgentCredentialInput,
+  AgentCredentialSummary,
+  AgentToolResources,
+} from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
-import type { IAgent, IAclEntry } from '~/types';
+import type { IAgent, IAclEntry, IAgentCredential } from '~/types';
 import { filterExistingSkillIds } from './skill';
+import { encryptV2, decryptV2 } from '~/crypto';
 import logger from '~/config/winston';
 
 const { mcp_delimiter } = Constants;
@@ -62,6 +67,94 @@ function extractMCPServerNames(tools: string[] | undefined | null): string[] {
     }
   }
   return Array.from(serverNames);
+}
+
+function hashSecret(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function stripCredentialSecrets(
+  credentials: IAgentCredential[] | undefined,
+): AgentCredentialSummary[] {
+  return (credentials ?? []).map((credential) => ({
+    id: credential.id,
+    label: credential.label,
+    origin: credential.origin,
+    loginUrl: credential.loginUrl,
+    authType: credential.authType,
+    username: credential.username,
+    passwordSet: credential.passwordSet === true,
+    usernameSelector: credential.usernameSelector,
+    passwordSelector: credential.passwordSelector,
+    submitSelector: credential.submitSelector,
+    successSelector: credential.successSelector,
+    enabled: credential.enabled !== false,
+    updatedAt: credential.updatedAt?.toISOString(),
+  }));
+}
+
+function redactAgentCredentialSecrets<T extends Record<string, unknown>>(agentData: T): T {
+  if (!Array.isArray(agentData.credentials)) {
+    return agentData;
+  }
+  return {
+    ...agentData,
+    credentials: stripCredentialSecrets(agentData.credentials as IAgentCredential[]),
+  };
+}
+
+async function mergeAgentCredentials({
+  existing = [],
+  incoming,
+}: {
+  existing?: IAgentCredential[];
+  incoming?: AgentCredentialInput[];
+}): Promise<IAgentCredential[] | undefined> {
+  if (!incoming) {
+    return undefined;
+  }
+
+  const existingById = new Map(existing.map((credential) => [credential.id, credential]));
+
+  return await Promise.all(
+    incoming.map(async (credential) => {
+      const id = credential.id || crypto.randomUUID();
+      const previous = existingById.get(id);
+      const next: IAgentCredential = {
+        id,
+        label: credential.label || undefined,
+        origin: credential.origin,
+        loginUrl: credential.loginUrl || undefined,
+        authType: credential.authType ?? 'basic_login',
+        username: credential.username || undefined,
+        passwordSet: previous?.passwordSet === true,
+        encryptedPassword: previous?.encryptedPassword,
+        passwordHash: previous?.passwordHash,
+        usernameSelector: credential.usernameSelector || undefined,
+        passwordSelector: credential.passwordSelector || undefined,
+        submitSelector: credential.submitSelector || undefined,
+        successSelector: credential.successSelector || undefined,
+        enabled: credential.enabled !== false,
+        updatedAt: new Date(),
+      };
+
+      if (credential.password === undefined) {
+        return next;
+      }
+
+      if (credential.password === '') {
+        next.passwordSet = false;
+        next.encryptedPassword = undefined;
+        next.passwordHash = undefined;
+        return next;
+      }
+
+      next.passwordSet = true;
+      next.encryptedPassword = await encryptV2(credential.password);
+      next.passwordHash = hashSecret(credential.password);
+      return next;
+    }),
+  );
 }
 
 /**
@@ -271,6 +364,10 @@ export function createAgentMethods(
       skipVersioning?: boolean;
     },
   ) => Promise<IAgent | null>;
+  getAgentCredential: (params: {
+    agentId: string;
+    origin: string;
+  }) => Promise<(AgentCredentialSummary & { password?: string }) | null>;
   deleteAgent: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent | null>;
   deleteUserAgents: (userId: string) => Promise<void>;
   revertAgentVersion: (
@@ -340,7 +437,14 @@ export function createAgentMethods(
         agentData.skills_enabled = false;
       }
     }
-    const { author: _author, ...versionData } = agentData;
+    const mergedCredentials = await mergeAgentCredentials({
+      incoming: agentData.credentials as AgentCredentialInput[] | undefined,
+    });
+    if (mergedCredentials) {
+      agentData.credentials = mergedCredentials;
+    }
+
+    const { author: _author, ...versionData } = redactAgentCredentialSecrets(agentData);
     const timestamp = new Date();
     const initialAgentData = {
       ...agentData,
@@ -355,7 +459,8 @@ export function createAgentMethods(
       mcpServerNames: extractMCPServerNames(agentData.tools as string[] | undefined),
     };
 
-    return (await Agent.create(initialAgentData)).toObject() as IAgent;
+    const created = (await Agent.create(initialAgentData)).toObject() as IAgent;
+    return redactAgentCredentialSecrets(created as unknown as Record<string, unknown>) as IAgent;
   }
 
   /**
@@ -436,7 +541,9 @@ export function createAgentMethods(
     const { updatingUserId = null, forceVersion = false, skipVersioning = false } = options;
     const mongoOptions = { new: true, upsert: false };
 
-    const currentAgent = await Agent.findOne(searchParameter);
+    const currentAgent = await Agent.findOne(searchParameter).select(
+      '+credentials.encryptedPassword +credentials.passwordHash',
+    );
     if (currentAgent) {
       const {
         __v,
@@ -447,6 +554,15 @@ export function createAgentMethods(
         ...versionData
       } = currentAgent.toObject() as unknown as Record<string, unknown>;
       const { $push, $pull, $addToSet, ...directUpdates } = updateData;
+
+      if (Array.isArray(directUpdates.credentials)) {
+        const mergedCredentials = await mergeAgentCredentials({
+          existing: currentAgent.credentials,
+          incoming: directUpdates.credentials as AgentCredentialInput[],
+        });
+        directUpdates.credentials = mergedCredentials;
+        updateData.credentials = mergedCredentials;
+      }
 
       /** Self-heal: drop allowlist ids whose skill doc no longer exists.
        *  A dangling id keeps the allowlist non-empty while scoping the
@@ -525,8 +641,8 @@ export function createAgentMethods(
       }
 
       const versionEntry: Record<string, unknown> = {
-        ...versionData,
-        ...directUpdates,
+        ...redactAgentCredentialSecrets(versionData),
+        ...redactAgentCredentialSecrets(directUpdates),
         updatedAt: new Date(),
       };
 
@@ -973,6 +1089,35 @@ export function createAgentMethods(
     return await Agent.countDocuments({ is_promoted: true });
   }
 
+  async function getAgentCredential({
+    agentId,
+    origin,
+  }: {
+    agentId: string;
+    origin: string;
+  }): Promise<(AgentCredentialSummary & { password?: string }) | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const agent = await Agent.findOne({ id: agentId })
+      .select('+credentials.encryptedPassword')
+      .lean<IAgent | null>();
+    const credential = agent?.credentials?.find(
+      (entry) => entry.origin === origin && entry.enabled !== false,
+    );
+    if (!credential) {
+      return null;
+    }
+
+    const [summary] = stripCredentialSecrets([credential]);
+    if (!credential.encryptedPassword) {
+      return summary;
+    }
+
+    return {
+      ...summary,
+      password: await decryptV2(credential.encryptedPassword),
+    };
+  }
+
   /** Removes an agent from the favorites of specified users. */
   async function removeAgentFromUserFavorites(
     resourceId: string,
@@ -999,6 +1144,7 @@ export function createAgentMethods(
     hasAgentWithMCPServerName,
     getMCPServerNamesByAgentIds,
     updateAgent,
+    getAgentCredential,
     deleteAgent,
     deleteUserAgents,
     revertAgentVersion,

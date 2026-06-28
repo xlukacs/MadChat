@@ -23,14 +23,14 @@
   ],
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && tsdown && tsc -p tsconfig.build.json",
-    "build:watch": "tsdown --watch",
+    "build": "npm run clean && tsdown --config-loader native && tsc -p tsconfig.build.json",
+    "build:watch": "tsdown --config-loader native --watch",
     "rollup:api": "npx rollup -c server-rollup.config.js --bundleConfigAsCjs",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci --logHeapUsage",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run tsdown && bun run tsc -p tsconfig.build.json"
+    "b:build": "bun run b:clean && bun run tsdown --config-loader native && bun run tsc -p tsconfig.build.json"
   },
   "repository": {
     "type": "git",

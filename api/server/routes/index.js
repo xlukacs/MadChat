@@ -36,10 +36,12 @@ const keys = require('./keys');
 const user = require('./user');
 const mcp = require('./mcp');
 const realtime = require('./realtime');
+const browserSessions = require('./browserSessions');
 const rum = require('./rum');
 
 module.exports = {
   rum,
+  browserSessions,
   mcp,
   realtime,
   auth,

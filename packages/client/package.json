@@ -29,11 +29,11 @@
   "scripts": {
     "clean": "rimraf dist",
     "b:clean": "bun run rimraf dist",
-    "build": "npm run clean && tsdown",
-    "build:dev": "npm run clean && NODE_ENV=development tsdown",
-    "b:build": "bun run b:clean && bun run tsdown",
-    "build:watch": "tsdown --watch",
-    "dev": "tsdown --watch"
+    "build": "npm run clean && tsdown --config-loader native",
+    "build:dev": "npm run clean && NODE_ENV=development tsdown --config-loader native",
+    "b:build": "bun run b:clean && bun run tsdown --config-loader native",
+    "build:watch": "tsdown --config-loader native --watch",
+    "dev": "tsdown --config-loader native --watch"
   },
   "peerDependencies": {
     "@ariakit/react": "^0.4.29",

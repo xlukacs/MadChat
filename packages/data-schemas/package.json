@@ -34,13 +34,13 @@
   ],
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && tsdown",
-    "build:watch": "tsdown --watch",
+    "build": "npm run clean && tsdown --config-loader native",
+    "build:watch": "tsdown --config-loader native --watch",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run tsdown"
+    "b:build": "bun run b:clean && bun run tsdown --config-loader native"
   },
   "repository": {
     "type": "git",

@@ -2,6 +2,7 @@ import { AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
   AgentSubagentsConfig,
+  AgentCredentialInput,
   AgentToolOptions,
   SupportContact,
   AgentProvider,
@@ -9,6 +10,10 @@ import type {
   Agent,
 } from 'librechat-data-provider';
 import type { OptionWithIcon, ExtendedFile } from './types';
+
+type AgentCredentialFormInput = AgentCredentialInput & {
+  passwordSet?: boolean;
+};
 
 export type AgentQueryResult = { found: true; agent: Agent } | { found: false };
 
@@ -46,6 +51,7 @@ export type AgentForm = {
   agent_ids?: string[];
   edges?: GraphEdge[];
   subagents?: AgentSubagentsConfig;
+  credentials?: AgentCredentialFormInput[];
   [AgentCapabilities.artifacts]?: ArtifactModes | string;
   recursion_limit?: number;
   support_contact?: SupportContact;

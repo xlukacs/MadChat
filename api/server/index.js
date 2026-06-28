@@ -275,6 +275,7 @@ const startServer = async () => {
 
   app.use('/api/tags', routes.tags);
   app.use('/api/mcp', routes.mcp);
+  app.use('/api/browser-sessions', routes.browserSessions);
   app.use('/api/realtime', routes.realtime);
   app.use('/api/rum', routes.rum);
 

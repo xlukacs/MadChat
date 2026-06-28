@@ -125,6 +125,28 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: Schema.Types.Mixed,
       default: undefined,
     },
+    credentials: {
+      type: [
+        {
+          id: { type: String, required: true },
+          label: { type: String, default: undefined },
+          origin: { type: String, required: true },
+          loginUrl: { type: String, default: undefined },
+          authType: { type: String, default: 'basic_login' },
+          username: { type: String, default: undefined },
+          passwordSet: { type: Boolean, default: false },
+          encryptedPassword: { type: String, select: false, default: undefined },
+          passwordHash: { type: String, select: false, default: undefined },
+          usernameSelector: { type: String, default: undefined },
+          passwordSelector: { type: String, default: undefined },
+          submitSelector: { type: String, default: undefined },
+          successSelector: { type: String, default: undefined },
+          enabled: { type: Boolean, default: true },
+          updatedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: undefined,
+    },
     tenantId: {
       type: String,
       index: true,

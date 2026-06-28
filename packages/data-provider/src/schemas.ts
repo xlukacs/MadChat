@@ -333,6 +333,7 @@ export const defaultAgentFormValues = {
     name: '',
     email: '',
   },
+  credentials: [],
   /** Optional allowlist. Only applies when `skills_enabled === true`.
    *  Empty/undefined + enabled = full catalog; non-empty + enabled = narrow to ids. */
   skills: undefined as string[] | undefined,

@@ -428,6 +428,7 @@ if (cluster.isMaster) {
     app.use('/api/permissions', routes.accessPermissions);
     app.use('/api/tags', routes.tags);
     app.use('/api/mcp', routes.mcp);
+    app.use('/api/browser-sessions', routes.browserSessions);
 
     /** 404 for unmatched API routes */
     app.use('/api', apiNotFound);
