@@ -1623,7 +1623,11 @@ async function loadToolsForExecution({
   const appConfig = req.config;
   const allLoadedTools = [];
   const mcpRequestScopedConnections = requestScopedConnections ?? getMCPRequestContext(req, res);
-  const configurable = { userMCPAuthMap, requestScopedConnections: mcpRequestScopedConnections };
+  const configurable = {
+    agentId: agent?.id,
+    userMCPAuthMap,
+    requestScopedConnections: mcpRequestScopedConnections,
+  };
 
   const isToolSearch = toolNames.includes(AgentConstants.TOOL_SEARCH);
   const ptcToolNames = [

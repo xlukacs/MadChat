@@ -43,6 +43,64 @@ function toTextContent(payload) {
   };
 }
 
+function getCredentialStatus(credential) {
+  if (!credential) {
+    return {
+      available: false,
+    };
+  }
+
+  return {
+    available: true,
+    origin: credential.origin,
+    loginUrl: credential.loginUrl,
+    usernameSet: Boolean(credential.username),
+    passwordSet: Boolean(credential.password),
+    selectorsConfigured: Boolean(credential.usernameSelector && credential.passwordSelector),
+  };
+}
+
+async function firstVisibleSelector(page, selectors) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if ((await locator.count().catch(() => 0)) === 0) {
+      continue;
+    }
+    if (await locator.isVisible().catch(() => false)) {
+      return selector;
+    }
+  }
+  return null;
+}
+
+async function getLoginSelectors(page, credential) {
+  const usernameSelector =
+    credential.usernameSelector ||
+    (await firstVisibleSelector(page, [
+      'input[type="email"]',
+      'input[name*="email" i]',
+      'input[name*="user" i]',
+      'input[name*="login" i]',
+      'input[id*="email" i]',
+      'input[id*="user" i]',
+      'input[id*="login" i]',
+      'input[type="text"]',
+      'input:not([type])',
+    ]));
+  const passwordSelector =
+    credential.passwordSelector ||
+    (await firstVisibleSelector(page, [
+      'input[type="password"]',
+      'input[name*="pass" i]',
+      'input[id*="pass" i]',
+    ]));
+
+  return {
+    usernameSelector,
+    passwordSelector,
+  };
+}
+
 async function internalFetch(pathname, init) {
   if (!apiBaseUrl || !internalToken) {
     return null;
@@ -341,29 +399,32 @@ server.tool(
       await page.goto(credential?.loginUrl || input.startUrl, { waitUntil: 'domcontentloaded' });
       await publish({ currentUrl: page.url() });
 
-      if (
-        credential?.username &&
-        credential?.password &&
-        credential?.usernameSelector &&
-        credential?.passwordSelector
-      ) {
-        await publish({
-          currentUrl: page.url(),
-          lastAction: 'Submitting configured login form',
-        });
-        await page.fill(credential.usernameSelector, credential.username);
-        await page.fill(credential.passwordSelector, credential.password);
-        if (credential.submitSelector) {
-          await page.click(credential.submitSelector);
+      if (credential?.username && credential?.password) {
+        const { usernameSelector, passwordSelector } = await getLoginSelectors(page, credential);
+        if (!usernameSelector || !passwordSelector) {
+          await publish({
+            currentUrl: page.url(),
+            lastAction: 'Credential found but login fields were not detected',
+          });
         } else {
-          await page.keyboard.press('Enter');
+          await publish({
+            currentUrl: page.url(),
+            lastAction: 'Submitting configured login form',
+          });
+          await page.fill(usernameSelector, credential.username);
+          await page.fill(passwordSelector, credential.password);
+          if (credential.submitSelector) {
+            await page.click(credential.submitSelector);
+          } else {
+            await page.keyboard.press('Enter');
+          }
+          if (credential.successSelector) {
+            await page.waitForSelector(credential.successSelector, { timeout: 30000 });
+          } else {
+            await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => undefined);
+          }
+          await publish({ currentUrl: page.url(), lastAction: 'Configured login completed' });
         }
-        if (credential.successSelector) {
-          await page.waitForSelector(credential.successSelector, { timeout: 30000 });
-        } else {
-          await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => undefined);
-        }
-        await publish({ currentUrl: page.url(), lastAction: 'Configured login completed' });
       }
 
       if (page.url() !== input.startUrl) {
@@ -415,6 +476,7 @@ server.tool(
         status: 'completed',
         summary,
         currentUrl: session.currentUrl,
+        credential: getCredentialStatus(credential),
         screenshotPath: finalScreenshotPath,
         hasLiveViewer: Boolean(apiBaseUrl && internalToken && !backendSession?.telemetryError),
         telemetryError: session.telemetryError,
@@ -439,6 +501,7 @@ server.tool(
         status: session.status,
         summary: session.lastAction,
         currentUrl: page.url(),
+        credential: getCredentialStatus(credential),
         hasLiveViewer: Boolean(apiBaseUrl && internalToken && !backendSession?.telemetryError),
         telemetryError: session.telemetryError,
       });

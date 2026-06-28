@@ -500,6 +500,7 @@ const loadTools = async ({
           model: agent?.model ?? model,
           serverName: config.serverName,
           provider: agent?.provider ?? endpoint,
+          agentId: agent?.id,
           config: config.config,
         };
 

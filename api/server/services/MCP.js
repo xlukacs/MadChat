@@ -54,6 +54,8 @@ const RECONNECT_THROTTLE_MS = 10_000;
 
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
+const BROWSER_SERVER_NAME = 'browser';
+const BROWSER_TASK_TOOL_NAME = 'browser_task';
 
 async function userCanUseMCPServers(user, req) {
   if (!user?.id || !user?.role) {
@@ -243,6 +245,48 @@ function isEmptyObjectSchema(jsonSchema) {
 
 const IMAGE_URL_PATTERN = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|gif|webp|bmp|svg)/gi;
 const REPLICATE_DELIVERY_PATTERN = /https?:\/\/replicate\.delivery\/[^\s"'<>]+/gi;
+
+function parseToolArguments(toolArguments) {
+  if (toolArguments && typeof toolArguments === 'object' && !Array.isArray(toolArguments)) {
+    return toolArguments;
+  }
+  if (typeof toolArguments !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(toolArguments);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function withBrowserRuntimeContext({
+  serverName,
+  toolName,
+  toolArguments,
+  requestBody,
+  agentId,
+}) {
+  if (serverName !== BROWSER_SERVER_NAME || toolName !== BROWSER_TASK_TOOL_NAME) {
+    return toolArguments;
+  }
+
+  const parsed = parseToolArguments(toolArguments);
+  if (!parsed) {
+    return toolArguments;
+  }
+
+  const runtimeAgentId = agentId || requestBody?.agent_id;
+  const runtimeConversationId = requestBody?.conversationId;
+  return {
+    ...parsed,
+    ...(parsed.agentId || !runtimeAgentId ? {} : { agentId: runtimeAgentId }),
+    ...(parsed.conversationId || !runtimeConversationId
+      ? {}
+      : { conversationId: runtimeConversationId }),
+  };
+}
 
 /**
  * Check if a string is an image URL (http/https or data URI)
@@ -931,6 +975,7 @@ async function reconnectServer({
  * @param {string} params.serverName
  * @param {string} params.model
  * @param {Providers | EModelEndpoint} params.provider - The provider for the tool.
+ * @param {string} [params.agentId] - Agent id owning this tool for runtime context injection.
  * @param {number} [params.index]
  * @param {AbortSignal} [params.signal]
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
@@ -948,6 +993,7 @@ async function createMCPTools({
   signal,
   config,
   provider,
+  agentId,
   serverName,
   configServers,
   userMCPAuthMap,
@@ -1010,6 +1056,7 @@ async function createMCPTools({
       mcpPermissionContext,
       user,
       provider,
+      agentId,
       userMCPAuthMap,
       configServers,
       streamId,
@@ -1039,6 +1086,7 @@ async function createMCPTools({
  * @param {AbortSignal} [params.signal]
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
  * @param {Providers | EModelEndpoint} params.provider - The provider for the tool.
+ * @param {string} [params.agentId] - Agent id owning this tool for runtime context injection.
  * @param {LCAvailableTools} [params.availableTools]
  * @param {import('@librechat/api').RequestBody} [params.requestBody]
  * @param {import('@librechat/api').RequestScopedMCPConnectionStore} [params.requestScopedConnections]
@@ -1055,6 +1103,7 @@ async function createMCPTool({
   signal,
   toolKey,
   provider,
+  agentId,
   userMCPAuthMap,
   availableTools,
   requestBody,
@@ -1146,6 +1195,7 @@ async function createMCPTool({
     requestBody,
     requestScopedConnections,
     provider,
+    agentId,
     toolName,
     serverName,
     serverConfig,
@@ -1160,6 +1210,7 @@ function createToolInstance({
   user: capturedUser = null,
   requestBody: capturedRequestBody,
   requestScopedConnections: capturedRequestScopedConnections,
+  agentId: capturedAgentId,
   toolName,
   serverName,
   serverConfig: capturedServerConfig,
@@ -1242,6 +1293,8 @@ function createToolInstance({
 
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
+      const requestBody = config?.configurable?.requestBody ?? capturedRequestBody;
+      const agentId = config?.configurable?.agentId ?? capturedAgentId;
 
       // For replicate-image/image-gen edit_image tool, always extract image URLs from conversation
       // This ensures we automatically use the most recent image from the conversation
@@ -1358,6 +1411,14 @@ function createToolInstance({
         }
       }
 
+      finalToolArguments = withBrowserRuntimeContext({
+        serverName,
+        toolName,
+        toolArguments: finalToolArguments,
+        requestBody,
+        agentId,
+      });
+
       const result = await mcpManager.callTool({
         serverName,
         serverConfig: capturedServerConfig,
@@ -1368,7 +1429,7 @@ function createToolInstance({
           signal: derivedSignal,
         },
         user: effectiveUser,
-        requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
+        requestBody,
         requestScopedConnections:
           config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
         customUserVars,

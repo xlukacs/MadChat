@@ -1185,6 +1185,76 @@ describe('User parameter passing tests', () => {
       );
     });
 
+    it('injects active agent context into browser task MCP calls', async () => {
+      const mockUser = { id: 'browser-user', email: 'browser@example.com', role: 'USER' };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const { getRoleByName } = require('~/models');
+      getRoleByName.mockResolvedValue({
+        permissions: {
+          [PermissionTypes.MCP_SERVERS]: {
+            [Permissions.USE]: true,
+          },
+        },
+      });
+
+      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+      mockGetMCPManager.mockReturnValue({
+        callTool: mockCallTool,
+      });
+
+      const mcpTool = await createMCPTool({
+        res: mockRes,
+        user: mockUser,
+        toolKey: `browser_task${D}browser`,
+        provider: 'openai',
+        agentId: 'agent_saved_credentials',
+        requestBody: {
+          agent_id: 'agent_request_body',
+          conversationId: 'conversation_123',
+        },
+        userMCPAuthMap: {},
+        availableTools: {
+          [`browser_task${D}browser`]: {
+            function: {
+              description: 'Browser task',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      await expect(
+        mcpTool.invoke(
+          {
+            task: 'Open the site',
+            startUrl: 'https://app.example.com',
+          },
+          {
+            configurable: {
+              user: mockUser,
+            },
+            metadata: {
+              provider: 'openai',
+              thread_id: 'thread-1',
+              run_id: 'run-1',
+            },
+            toolCall: {},
+          },
+        ),
+      ).resolves.toBe('ok');
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            task: 'Open the site',
+            startUrl: 'https://app.example.com',
+            agentId: 'agent_saved_credentials',
+            conversationId: 'conversation_123',
+          }),
+        }),
+      );
+    });
+
     it('should pass captured request body when invocation config omits requestBody', async () => {
       const mockUser = { id: 'captured-body-user', email: 'captured@example.com', role: 'USER' };
       const requestBody = { conversationId: 'conv-123', messageId: 'msg-123' };
