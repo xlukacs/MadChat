@@ -92,5 +92,24 @@ services:
     env_file:
       - .env
 
+  browser_mcp:
+    container_name: browser_mcp
+    build:
+      context: ./mcp/browser
+    image: madchat-browser-mcp:local
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BROWSER_ALLOWED_ORIGINS: ${BROWSER_ALLOWED_ORIGINS}
+      BROWSER_INTERNAL_TOKEN: ${BROWSER_INTERNAL_TOKEN}
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
+      BROWSER_STORAGE_DIR: /app/state
+      LIBRECHAT_API_BASE_URL: http://host.docker.internal:${PORT:-3080}
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./mcp/browser/state:/app/state
+
 volumes:
   pgdata2:

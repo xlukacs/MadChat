@@ -76,6 +76,7 @@ jest.mock('~/models', () => ({
   createToken: jest.fn(),
   updateToken: jest.fn(),
   deleteTokens: jest.fn(),
+  getAgent: jest.fn(() => Promise.resolve(null)),
   getRoleByName: jest.fn(),
 }));
 
@@ -1253,6 +1254,60 @@ describe('User parameter passing tests', () => {
           }),
         }),
       );
+    });
+
+    it('adds only safe browser credential references to the browser task description', async () => {
+      const mockUser = { id: 'browser-user', email: 'browser@example.com', role: 'USER' };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const { getAgent, getRoleByName } = require('~/models');
+      getRoleByName.mockResolvedValue({
+        permissions: {
+          [PermissionTypes.MCP_SERVERS]: {
+            [Permissions.USE]: true,
+          },
+        },
+      });
+      getAgent.mockResolvedValue({
+        credentials: [
+          {
+            id: 'credential_safe_handle',
+            label: 'Portal login',
+            origin: 'https://app.example.com',
+            loginUrl: 'https://app.example.com/login',
+            username: 'do-not-show-user',
+            passwordSet: true,
+            enabled: true,
+          },
+        ],
+      });
+
+      mockGetMCPManager.mockReturnValue({
+        callTool: jest.fn().mockResolvedValue(['ok', null]),
+      });
+
+      const mcpTool = await createMCPTool({
+        res: mockRes,
+        user: mockUser,
+        toolKey: `browser_task${D}browser`,
+        provider: 'openai',
+        agentId: 'agent_saved_credentials',
+        requestBody: {},
+        userMCPAuthMap: {},
+        availableTools: {
+          [`browser_task${D}browser`]: {
+            function: {
+              description: 'Browser task',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      expect(mcpTool.description).toContain('credentialId=credential_safe_handle');
+      expect(mcpTool.description).toContain('origin=https://app.example.com');
+      expect(mcpTool.description).toContain('passwordSet=true');
+      expect(mcpTool.description).not.toContain('do-not-show-user');
+      expect(mcpTool.description).not.toContain('password=');
     });
 
     it('should pass captured request body when invocation config omits requestBody', async () => {

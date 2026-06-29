@@ -366,7 +366,8 @@ export function createAgentMethods(
   ) => Promise<IAgent | null>;
   getAgentCredential: (params: {
     agentId: string;
-    origin: string;
+    origin?: string;
+    credentialId?: string;
   }) => Promise<(AgentCredentialSummary & { password?: string }) | null>;
   deleteAgent: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent | null>;
   deleteUserAgents: (userId: string) => Promise<void>;
@@ -1094,18 +1095,25 @@ export function createAgentMethods(
   async function getAgentCredential({
     agentId,
     origin,
+    credentialId,
   }: {
     agentId: string;
-    origin: string;
+    origin?: string;
+    credentialId?: string;
   }): Promise<(AgentCredentialSummary & { password?: string }) | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const agent = await Agent.findOne({ id: agentId })
       .select('+credentials.encryptedPassword')
       .lean<IAgent | null>();
     const credential = agent?.credentials?.find(
-      (entry) => entry.origin === origin && entry.enabled !== false,
+      (entry) =>
+        entry.enabled !== false &&
+        (credentialId ? entry.id === credentialId : entry.origin === origin),
     );
     if (!credential) {
+      return null;
+    }
+    if (origin && credential.origin !== origin) {
       return null;
     }
 

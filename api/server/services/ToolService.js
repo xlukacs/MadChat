@@ -227,7 +227,11 @@ const shouldEnableListAccessibleFiles = (req) => {
     : '';
 
   const lastUserText = extractText(
-    req?.body?.message ?? req?.body?.text ?? req?.body?.prompt ?? req?.body?.input ?? lastFromMessages,
+    req?.body?.message ??
+      req?.body?.text ??
+      req?.body?.prompt ??
+      req?.body?.input ??
+      lastFromMessages,
   );
 
   if (typeof lastUserText !== 'string' || lastUserText.trim().length === 0) {
@@ -239,7 +243,7 @@ const shouldEnableListAccessibleFiles = (req) => {
     (s.includes('file') || s.includes('files'))
   );
 };
- 
+
 const getSaveEditedFileInstructions = () => {
   return [
     '## Edited file outputs',
@@ -254,7 +258,7 @@ const getSaveEditedFileInstructions = () => {
     'Do not include additional artifact blocks. The artifact body must be the complete updated file content.',
   ].join('\n');
 };
- 
+
 const getRetrieveFileToArtifactInstructions = () => {
   return [
     '## File retrieval to artifact',
@@ -397,7 +401,7 @@ async function processRequiredActions(client, requiredActions) {
         output = JSON.stringify(output);
       }
       requiredActions[i].output = output;
- 
+
       // Stream any saved file attachments produced by the tool
       if (artifact && Array.isArray(artifact.saved_files) && artifact.saved_files.length > 0) {
         for (const saved of artifact.saved_files) {
@@ -1270,10 +1274,14 @@ async function loadAgentTools({
     }
     return true;
   });
- 
+
   // Auto-enable save_edited_file when user has attached a text-like file in this request.
   // This keeps the UX simple: upload -> ask for edits -> model can return an updated downloadable file.
-  if (_agentTools && shouldEnableSaveEditedFile(req) && !_agentTools.includes(SAVE_EDITED_FILE_TOOL)) {
+  if (
+    _agentTools &&
+    shouldEnableSaveEditedFile(req) &&
+    !_agentTools.includes(SAVE_EDITED_FILE_TOOL)
+  ) {
     _agentTools.push(SAVE_EDITED_FILE_TOOL);
   }
   if (
@@ -1288,11 +1296,13 @@ async function loadAgentTools({
   if (_agentTools && areToolsEnabled && !_agentTools.includes(LIST_ACCESSIBLE_FILES_TOOL)) {
     _agentTools.push(LIST_ACCESSIBLE_FILES_TOOL);
   }
- 
+
   // If we enabled save_edited_file, inject explicit instructions into the agent system prompt.
   if (shouldEnableSaveEditedFile(req)) {
-    const current = req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
-    const injected = `${current}\n\n${getSaveEditedFileInstructions()}\n\n${getRetrieveFileToArtifactInstructions()}`.trim();
+    const current =
+      req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
+    const injected =
+      `${current}\n\n${getSaveEditedFileInstructions()}\n\n${getRetrieveFileToArtifactInstructions()}`.trim();
     if (req?.body?.ephemeralAgent) {
       req.body.ephemeralAgent.additional_instructions = injected;
     }
@@ -1303,7 +1313,8 @@ async function loadAgentTools({
 
   // Only inject listing instructions when the user likely asked for it, to avoid prompt bloat.
   if (shouldEnableListAccessibleFiles(req)) {
-    const current = req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
+    const current =
+      req?.body?.ephemeralAgent?.additional_instructions ?? agent?.additional_instructions ?? '';
     const injected = `${current}\n\n${getListAccessibleFilesInstructions()}`.trim();
     if (req?.body?.ephemeralAgent) {
       req.body.ephemeralAgent.additional_instructions = injected;

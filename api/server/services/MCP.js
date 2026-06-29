@@ -261,13 +261,7 @@ function parseToolArguments(toolArguments) {
   }
 }
 
-function withBrowserRuntimeContext({
-  serverName,
-  toolName,
-  toolArguments,
-  requestBody,
-  agentId,
-}) {
+function withBrowserRuntimeContext({ serverName, toolName, toolArguments, requestBody, agentId }) {
   if (serverName !== BROWSER_SERVER_NAME || toolName !== BROWSER_TASK_TOOL_NAME) {
     return toolArguments;
   }
@@ -286,6 +280,72 @@ function withBrowserRuntimeContext({
       ? {}
       : { conversationId: runtimeConversationId }),
   };
+}
+
+function getSafeBrowserCredentialReferences(credentials) {
+  if (!Array.isArray(credentials)) {
+    return [];
+  }
+
+  return credentials
+    .filter((credential) => credential?.id && credential?.origin && credential.enabled !== false)
+    .map((credential) => ({
+      id: credential.id,
+      label: credential.label || credential.origin,
+      origin: credential.origin,
+      loginUrl: credential.loginUrl || credential.origin,
+      passwordSet: credential.passwordSet === true,
+    }));
+}
+
+function formatBrowserCredentialReferences(credentials) {
+  const references = getSafeBrowserCredentialReferences(credentials);
+  const baseInstruction =
+    'Credential handling: never ask the user to paste passwords for saved browser credentials. ' +
+    'Use credentialId or credentialOrigin when calling this tool; the browser MCP fetches and ' +
+    'decrypts the credential directly from LibreChat. Do not create fill steps for username or ' +
+    'password inputs; saved login fields are filled by the browser MCP runtime.';
+
+  if (references.length === 0) {
+    return `${baseInstruction}\nNo saved browser credential references are configured for this agent.`;
+  }
+
+  return [
+    baseInstruction,
+    'Saved browser credential references for this agent:',
+    ...references.map((credential) =>
+      [
+        `- credentialId=${credential.id}`,
+        `origin=${credential.origin}`,
+        `label=${credential.label}`,
+        `loginUrl=${credential.loginUrl}`,
+        `passwordSet=${credential.passwordSet}`,
+      ].join('; '),
+    ),
+  ].join('\n');
+}
+
+async function withBrowserCredentialDescription({ serverName, toolName, toolDefinition, agentId }) {
+  if (serverName !== BROWSER_SERVER_NAME || toolName !== BROWSER_TASK_TOOL_NAME || !agentId) {
+    return toolDefinition;
+  }
+
+  try {
+    const agent = await db.getAgent({ id: agentId });
+    const credentialInstructions = formatBrowserCredentialReferences(agent?.credentials);
+    return {
+      ...toolDefinition,
+      description: [toolDefinition.description, credentialInstructions]
+        .filter(Boolean)
+        .join('\n\n'),
+    };
+  } catch (error) {
+    logger.warn(
+      `[MCP][${serverName}][${toolName}] Failed to load safe browser credential references`,
+      error,
+    );
+    return toolDefinition;
+  }
 }
 
 /**
@@ -1188,6 +1248,13 @@ async function createMCPTool({
     return createUnavailableToolStub(toolName, serverName);
   }
 
+  const runtimeToolDefinition = await withBrowserCredentialDescription({
+    serverName,
+    toolName,
+    toolDefinition,
+    agentId,
+  });
+
   return createToolInstance({
     res,
     mcpPermissionContext,
@@ -1199,7 +1266,7 @@ async function createMCPTool({
     toolName,
     serverName,
     serverConfig,
-    toolDefinition,
+    toolDefinition: runtimeToolDefinition,
     streamId,
   });
 }

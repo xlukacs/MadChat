@@ -21,20 +21,16 @@ Copy `.env.example` to `.env` for local development and set allowed origins.
 ```yaml
 mcpServers:
   browser:
-    type: stdio
-    command: node
-    args:
-      - /app/mcp/browser/server.mjs
+    type: streamable-http
+    url: http://localhost:8007/mcp
     timeout: 600000
     chatMenu: true
-    env:
-      BROWSER_ALLOWED_ORIGINS: "${BROWSER_ALLOWED_ORIGINS}"
-      BROWSER_INTERNAL_TOKEN: "${BROWSER_INTERNAL_TOKEN}"
-      BROWSER_HEADLESS: "${BROWSER_HEADLESS}"
-      BROWSER_STORAGE_DIR: "${BROWSER_STORAGE_DIR}"
-      LIBRECHAT_API_BASE_URL: "${LIBRECHAT_API_BASE_URL}"
-      BROWSER_USER_ID: "{{LIBRECHAT_USER_ID}}"
 ```
+
+The bundled Compose service runs this server in a Playwright container and publishes the MCP
+endpoint on `localhost:8007/mcp`. When the LibreChat backend runs on the host, the browser
+container calls it through `LIBRECHAT_API_BASE_URL=http://host.docker.internal:3080` so
+credential/session lookups reach the same backend process that serves the UI.
 
 ## Security
 
@@ -49,6 +45,7 @@ mcpServers:
 
 - open a start URL,
 - optionally perform a configured username/password login from the current agent's saved credentials,
+- select saved credentials by `credentialId` or `credentialOrigin` without exposing passwords to the model,
 - execute multiple Playwright-backed browser steps inside the same tool call,
 - click, fill, press keys, wait, capture screenshots, and extract text,
 - publish status and screenshots to LibreChat so the user can peek at the live browser session,

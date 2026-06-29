@@ -373,17 +373,8 @@ actions:
 #       - "@modelcontextprotocol/server-puppeteer"
 #     timeout: 300000  # 5 minutes timeout for this server
 #   browser:
-#     type: stdio
-#     command: node
-#     args:
-#       - /app/mcp/browser/server.mjs
-#     env:
-#       BROWSER_ALLOWED_ORIGINS: "${BROWSER_ALLOWED_ORIGINS}"
-#       BROWSER_INTERNAL_TOKEN: "${BROWSER_INTERNAL_TOKEN}"
-#       BROWSER_HEADLESS: "${BROWSER_HEADLESS}"
-#       BROWSER_STORAGE_DIR: "${BROWSER_STORAGE_DIR}"
-#       LIBRECHAT_API_BASE_URL: "${LIBRECHAT_API_BASE_URL}"
-#       BROWSER_USER_ID: "{{LIBRECHAT_USER_ID}}"
+#     type: streamable-http
+#     url: http://localhost:8007/mcp
 #     timeout: 600000
 #     chatMenu: true
 #   filesystem:

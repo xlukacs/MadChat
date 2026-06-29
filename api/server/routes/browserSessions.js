@@ -38,15 +38,17 @@ router.post('/credentials', express.json(), async (req, res) => {
     return;
   }
 
-  const { agentId, origin } = req.body ?? {};
-  if (!agentId || !origin) {
-    return res.status(400).json({ error: 'agentId and origin are required' });
+  const { agentId, origin, credentialId } = req.body ?? {};
+  if (!agentId || (!origin && !credentialId)) {
+    return res.status(400).json({ error: 'agentId and origin or credentialId are required' });
   }
 
   try {
+    const normalizedOrigin = origin ? new URL(origin).origin : undefined;
     const credential = await db.getAgentCredential({
       agentId,
-      origin: new URL(origin).origin,
+      origin: normalizedOrigin,
+      credentialId,
     });
     if (!credential) {
       return res.status(404).json({ error: 'Credential not found' });
